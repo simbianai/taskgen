@@ -445,6 +445,7 @@ def strict_json(system_prompt: str, user_prompt: str, output_format: dict, retur
     Output:
     - res: Dict. The JSON output of the model. Returns {} if JSON parsing failed.
     """
+    return {"test": "test"}
     # default initialise custom_checks to {}
     if custom_checks is None:
         custom_checks = {}
