@@ -3,6 +3,8 @@ import re
 import ast
 from typing import Tuple
 
+from taskgen.utils import add_additional_data_to_response
+
 
 ### Helper Functions ###
 
@@ -11,7 +13,7 @@ def convert_to_list(field: str, **kwargs) -> list:
     
     system_msg = '''Output each element of the list in a new line starting with (%item) and ending with \n, e.g. ['hello', 'world'] -> (%item) hello\n(%item) world\nStart your response with (%item) and do not provide explanation'''
     user_msg = str(field)
-    res = chat(system_msg, user_msg, **kwargs)
+    res, raw_res = chat(system_msg, user_msg, **kwargs)
 
     # Extract out list items
     field = re.findall(r'\(%item\)\s*(.*?)\n*(?=\(%item\)|$)', res, flags=re.DOTALL)
@@ -84,7 +86,7 @@ Output in the following format:
 Update text enclosed in <>. Be concise.
 '''
     user_msg = str(field)
-    res = chat(system_msg, user_msg, **kwargs)
+    res, raw_res = chat(system_msg, user_msg, **kwargs)
     requirement_met, action_needed = parse_response_llm_check(res)
     return requirement_met, action_needed
 
@@ -417,7 +419,7 @@ def chat(system_prompt: str, user_prompt: str, model: str = 'gpt-4o-mini', tempe
         print('\nUser prompt:', user_prompt)
         print('\nGPT response:', res)
             
-    return res
+    return res, response
 
 
 ### Main Functions ###
@@ -462,7 +464,7 @@ def strict_json(system_prompt: str, user_prompt: str, output_format: dict, retur
         my_system_prompt = str(system_prompt) + output_format_prompt
         my_user_prompt = str(user_prompt) 
             
-        res = chat(my_system_prompt, my_user_prompt, response_format = {"type": "json_object"}, **kwargs)
+        res, raw_res = chat(my_system_prompt, my_user_prompt, response_format = {"type": "json_object"}, **kwargs)
         
         if return_as_json:
             return res
@@ -486,12 +488,15 @@ Update values enclosed in <> and remove the <>.
 Your response must only be the updated json template beginning with {{ and ending with }}
 Ensure the following output keys are present in the json: {' '.join(list(new_output_format.keys()))}'''
 
+        raw_responses = []
+
         for i in range(num_tries):
             my_system_prompt = str(system_prompt) + output_format_prompt + error_msg
             my_user_prompt = str(user_prompt) 
 
             # Use OpenAI to get a response
-            res = chat(my_system_prompt, my_user_prompt, **kwargs)
+            res, raw_res = chat(my_system_prompt, my_user_prompt, **kwargs)
+            raw_responses.append(raw_res)
             
             # extract only the chunk including the opening and closing braces
             # generate the { or } if LLM has forgotten to do so
@@ -526,6 +531,8 @@ Ensure the following output keys are present in the json: {' '.join(list(new_out
                                 raise Exception(f'Output field of "{key}" does not meet requirement "{requirement}". Action needed: "{action_needed}"')
                             else:
                                 print('Requirement met\n\n')
+                for raw_response in raw_responses:
+                    res = add_additional_data_to_response(llm_response=res, response_dict=raw_response, host=kwargs.get('host', 'openai'))
                 if return_as_json:
                     return json.dumps(end_dict, ensure_ascii=False)
                 else:

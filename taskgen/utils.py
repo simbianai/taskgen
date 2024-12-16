@@ -3,6 +3,7 @@ import heapq
 import inspect
 import re
 
+ADDITIONAL_DATA_KEY = "additional_data_1983c80c"
 
 def get_source_code_for_func(fn):
     if fn.__name__ == "<lambda>":
@@ -45,7 +46,34 @@ def top_k_index(lst, k):
     top_k_indices = [index for index, _ in top_k_values_with_indices]
     return top_k_indices
 
+def extract_usage_obj(llm_response: dict, host: str="openai") -> dict:
+    ''' Extract the usage object from the response '''
+    if not isinstance(llm_response, dict):
+        return {"error": "LLM response is not a dictionary"}
+    
+    usage_obj = None
+    if host == "openai":
+        usage_obj = llm_response.get("usage")
 
+        if usage_obj is None or not isinstance(usage_obj, dict):
+            return {"error": "Usage object not found in the response or is not a dictionary"}
+        usage_obj = usage_obj.model_dump()
 
+    return usage_obj
 
+def add_additional_data_to_response(llm_response, response_dict: dict, host: str="openai") -> dict:
+    ''' Add additional data to the LLM response '''
+    if not isinstance(response_dict, dict):
+        return response_dict
+    
+    if ADDITIONAL_DATA_KEY not in response_dict:
+        response_dict[ADDITIONAL_DATA_KEY] = {}
+    
+    # Add Usage object to the response
+    usage_obj = extract_usage_obj(llm_response, host)
+    if "usage" not in response_dict[ADDITIONAL_DATA_KEY]:
+        response_dict[ADDITIONAL_DATA_KEY]["usage"] = []
 
+    response_dict[ADDITIONAL_DATA_KEY]["usage"].append(usage_obj)
+
+    return response_dict
