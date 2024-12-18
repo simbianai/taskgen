@@ -61,6 +61,7 @@ def extract_usage_obj(llm_response, host: str) -> dict:
         if not isinstance(usage_obj, CompletionUsage):
             return {"error": "Usage object is not an instance of CompletionUsage class"}
         usage_obj = usage_obj.model_dump()
+        usage_obj["model_name"] = llm_response.model
     else:
         usage_obj = {"error": "Unknown host"}
 
