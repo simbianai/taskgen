@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="taskgen",
-    version="3.3.7",
+    version="3.3.5",
     packages=find_packages(),
     install_requires=[
         "openai>=1.3.6",
