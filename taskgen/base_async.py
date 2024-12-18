@@ -191,7 +191,10 @@ async def chat_async(system_prompt: str, user_prompt: str, raw_llm_responses: di
         ensure_awaitable(llm, 'llm')
         ''' If you specified your own LLM, then we just feed in the system and user prompt 
         LLM function should take in system prompt (str) and user prompt (str), and output a response (str) '''
-        res = await llm(system_prompt = system_prompt, user_prompt = user_prompt, raw_llm_responses = raw_llm_responses)
+        try:
+            res = await llm(system_prompt = system_prompt, user_prompt = user_prompt, raw_llm_responses = raw_llm_responses)
+        except Exception:
+            res = await llm(system_prompt = system_prompt, user_prompt = user_prompt)
     
     ## This part here is for llms that are OpenAI based
     elif host == 'openai':

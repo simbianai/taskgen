@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="taskgen",
-    version="3.3.4",
+    version="3.3.5",
     packages=find_packages(),
     install_requires=[
         "openai>=1.3.6",
@@ -16,6 +16,7 @@ setup(
         "chromadb",
         "xlrd",
         "chromadb>=0.5.2",
-        "asyncio"
+        "asyncio",
+        "opentelemetry-sdk==1.22.0",
     ],
 )
