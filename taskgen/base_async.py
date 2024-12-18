@@ -3,19 +3,21 @@ import json
 import re
 import ast
 from typing import Tuple
+import uuid
+
 from taskgen.base import convert_to_dict, parse_response_llm_check, remove_unicode_escape, type_check_and_convert, wrap_with_angle_brackets
 
-from taskgen.utils import ensure_awaitable
+from taskgen.utils import add_additional_data_to_response, ensure_awaitable
 
 ### Helper Functions ###
 
 
-async def convert_to_list_async(field: str, **kwargs) -> list:
+async def convert_to_list_async(field: str, raw_llm_responses: dict, **kwargs) -> list:
     '''Converts the string field into a list using the LLM (with **kwargs) to list out elements line by line'''
     
     system_msg = '''Output each element of the list in a new line starting with (%item) and ending with \n, e.g. ['hello', 'world'] -> (%item) hello\n(%item) world\nStart your response with (%item) and do not provide explanation'''
     user_msg = str(field)
-    res = await chat_async(system_msg, user_msg, **kwargs)
+    res = await chat_async(system_msg, user_msg, raw_llm_responses, **kwargs)
 
     # Extract out list items
     field = re.findall(r'\(%item\)\s*(.*?)\n*(?=\(%item\)|$)', res, flags=re.DOTALL)
@@ -23,7 +25,7 @@ async def convert_to_list_async(field: str, **kwargs) -> list:
 
 
 
-async def llm_check_async(field, llm_check_msg: str, **kwargs) -> Tuple[bool, str]:
+async def llm_check_async(field, llm_check_msg: str, raw_llm_responses: dict, **kwargs) -> Tuple[bool, str]:
     ''' Uses the LLM to check if the field adheres to the llm_check_msg.
     Outputs whether requirement is met (True or False) and the action needed'''
     system_msg = f'''Check whether output field meets this requirement: {llm_check_msg}
@@ -36,12 +38,12 @@ Output in the following format:
 Update text enclosed in <>. Be concise.
 '''
     user_msg = str(field)
-    res = await chat_async(system_msg, user_msg, **kwargs)
+    res = await chat_async(system_msg, user_msg, raw_llm_responses, **kwargs)
     requirement_met, action_needed = parse_response_llm_check(res)
     return requirement_met, action_needed
 
 
-async def check_datatype_async(field, key: dict, data_type: str, **kwargs):
+async def check_datatype_async(field, key: dict, data_type: str, raw_llm_responses: dict, **kwargs):
     ''' Ensures that output field of the key of JSON dictionary is of data_type 
     Currently supports int, float, str, code, enum, lists, nested lists, dict, dict with keys
     Takes in **kwargs for the LLM model
@@ -52,7 +54,7 @@ async def check_datatype_async(field, key: dict, data_type: str, **kwargs):
     if data_type.lower()[:6] == 'ensure':
         llm_check_msg = data_type[6:].strip()
         print(f'Using LLM to check "{field}" to see if it adheres to "{llm_check_msg}"')
-        requirement_met, action_needed = await llm_check_async(field, llm_check_msg, **kwargs)
+        requirement_met, action_needed = await llm_check_async(field, llm_check_msg, raw_llm_responses, **kwargs)
         # if check failed, raise error
         if not requirement_met:
             raise Exception(f'''Output field of "{key}" does not meet requirement "{llm_check_msg}". Action needed: "{action_needed}"''')
@@ -73,7 +75,7 @@ async def check_datatype_async(field, key: dict, data_type: str, **kwargs):
             # if it is already in a datatype that is a list, ask LLM to fix it (1 LLM call)
             if '[' in field and ']' in field:
                 print(f'Attempting to use LLM to fix {field} as it is not a proper array')
-                field = await convert_to_list_async(field, **kwargs)   
+                field = await convert_to_list_async(field, raw_llm_responses, **kwargs)   
                 print(f'Fixed list: {field}\n\n')
             else:
                 raise Exception(f'''Output field of "{key}" not of data type array. If not possible to match, split output field into parts for elements of the array''')
@@ -85,14 +87,14 @@ async def check_datatype_async(field, key: dict, data_type: str, **kwargs):
         internal_data_type = match.group(1)  # Extract the content inside the brackets
         # do processing for internal elements
         for num in range(len(field)):
-            field[num] = await check_datatype_async(field[num], 'array element of '+key, internal_data_type, **kwargs)
+            field[num] = await check_datatype_async(field[num], 'array element of '+key, internal_data_type, raw_llm_responses, **kwargs)
             
     match = re.search(r"array\[(.*)\]", data_type, re.IGNORECASE)
     if match:
         internal_data_type = match.group(1)  # Extract the content inside the brackets
         # do processing for internal elements
         for num in range(len(field)):
-            field[num] = await check_datatype_async(field[num], 'array element of '+key, internal_data_type, **kwargs)
+            field[num] = await check_datatype_async(field[num], 'array element of '+key, internal_data_type, raw_llm_responses, **kwargs)
             
     # if it is not nested, check individually
     else:
@@ -104,7 +106,7 @@ async def check_datatype_async(field, key: dict, data_type: str, **kwargs):
     
     
     
-async def check_key_async(field: str, output_format, new_output_format, delimiter: str, delimiter_num: int, **kwargs):
+async def check_key_async(field: str, output_format, new_output_format, delimiter: str, delimiter_num: int, raw_llm_responses: dict, **kwargs):
     ''' Check whether each key in dict, or elements in list of new_output_format is present in field, and whether they meet the right data type requirements, then convert field to the right data type
     If needed, calls LLM model with parameters **kwargs to correct the output format for improperly formatted list
     output_format is user-given output format at each level, new_output_format is with delimiters in keys, and angle brackets surrounding values
@@ -124,13 +126,13 @@ async def check_key_async(field: str, output_format, new_output_format, delimite
             # # if the output is a bool type, convert true and false into True and False for ast.literal_eval parsing
             if isinstance(output_format[key], str) and 'type:' in output_format[key] and 'bool' in output_format[key].split('type:')[-1]:
                 value = value.replace('true','True').replace('false','False')
-            output_d[key] = await check_key_async(value, output_format[key], new_output_format[cur_delimiter+key+cur_delimiter], delimiter, delimiter_num+1)
+            output_d[key] = await check_key_async(value, output_format[key], new_output_format[cur_delimiter+key+cur_delimiter], delimiter, delimiter_num+1, raw_llm_responses)
             # after stepping back from the later layers back to present layer, check for types
             if isinstance(output_format[key], str) and 'type:' in output_format[key]:             
                 # extract out data type
                 data_type = str(output_format[key]).split('type:')[-1]
                 # check the data type, perform type conversion as necessary
-                output_d[key] = await check_datatype_async(output_d[key], key, data_type, **kwargs)   
+                output_d[key] = await check_datatype_async(output_d[key], key, data_type, raw_llm_responses, **kwargs)   
                 
         return output_d
 
@@ -140,13 +142,13 @@ async def check_key_async(field: str, output_format, new_output_format, delimite
             field = ast.literal_eval(field)
         except Exception as e:
             # if there is an error in literal processing, use LLM to split field into list
-            field = await convert_to_list_async(field, **kwargs)
+            field = await convert_to_list_async(field, raw_llm_responses, **kwargs)
             
         # check that list has at least same number of elements as the input
         if len(field) < len(output_format):
             raise Exception(f'''Output "{field}" has fewer elements than required by "{output_format}". Add in more list elements.''')
         
-        coroutines = [check_key_async(str(field[num]), output_format[num], new_output_format[num], delimiter, delimiter_num+1) for num in range(len(output_format))]
+        coroutines = [check_key_async(str(field[num]), output_format[num], new_output_format[num], delimiter, delimiter_num+1, raw_llm_responses) for num in range(len(output_format))]
         results = await asyncio.gather(*coroutines)
         return results
     
@@ -169,7 +171,7 @@ async def check_key_async(field: str, output_format, new_output_format, delimite
 
 
 
-async def chat_async(system_prompt: str, user_prompt: str, model: str = 'gpt-4o-mini', temperature: float = 0, verbose: bool = False, host: str = 'openai', llm= None, **kwargs):
+async def chat_async(system_prompt: str, user_prompt: str, raw_llm_responses: dict, model: str = 'gpt-4o-mini', temperature: float = 0, verbose: bool = False, host: str = 'openai', llm= None, **kwargs):
     r"""Performs a chat with the host's LLM model with system prompt, user prompt, model, verbose and kwargs
     Returns the output string res
     - system_prompt: String. Write in whatever you want the LLM to become. e.g. "You are a \<purpose in life\>"
@@ -189,7 +191,7 @@ async def chat_async(system_prompt: str, user_prompt: str, model: str = 'gpt-4o-
         ensure_awaitable(llm, 'llm')
         ''' If you specified your own LLM, then we just feed in the system and user prompt 
         LLM function should take in system prompt (str) and user prompt (str), and output a response (str) '''
-        res = await llm(system_prompt = system_prompt, user_prompt = user_prompt)
+        res = await llm(system_prompt = system_prompt, user_prompt = user_prompt, raw_llm_responses = raw_llm_responses)
     
     ## This part here is for llms that are OpenAI based
     elif host == 'openai':
@@ -212,6 +214,8 @@ async def chat_async(system_prompt: str, user_prompt: str, model: str = 'gpt-4o-
             ],
             **kwargs
         )
+        llm_response_id = str(uuid.uuid4())
+        raw_llm_responses[llm_response_id] = {"host": host, "response": response}
         res = response.choices[0].message.content
 
     if verbose:
@@ -248,6 +252,7 @@ async def strict_json_async(system_prompt: str, user_prompt: str, output_format:
     Output:
     - res: Dict. The JSON output of the model. Returns {} if JSON parsing failed.
     """
+    raw_llm_responses = {}
     # default initialise custom_checks to {}
     if custom_checks is None:
         custom_checks = {}
@@ -269,14 +274,19 @@ async def strict_json_async(system_prompt: str, user_prompt: str, output_format:
             
         res = await chat_async(my_system_prompt, my_user_prompt, response_format = {"type": "json_object"}, **kwargs)
         
-        if return_as_json:
-            return res
-        else:
-            try:
-                loaded_json = json.loads(res)
-            except Exception as e:
-                loaded_json = {}
-            return loaded_json
+        try:
+            response_dict = json.loads(res)
+            response_dict = add_additional_data_to_response(llm_responses=raw_llm_responses, response_dict=response_dict)
+            if not response_dict:
+                raise Exception('Empty JSON response')
+
+            if return_as_json:
+                return json.dumps(response_dict)
+            else:
+                return response_dict
+
+        except Exception as e:
+            return json.dumps({}) if return_as_json else {}
         
     # Otherwise, implement JSON parsing using Strict JSON
     else:
@@ -296,7 +306,7 @@ Ensure the following output keys are present in the json: {' '.join(list(new_out
             my_user_prompt = str(user_prompt) 
 
             # Use OpenAI to get a response
-            res = await chat_async(my_system_prompt, my_user_prompt, **kwargs)
+            res = await chat_async(my_system_prompt, my_user_prompt, raw_llm_responses, **kwargs)
             
             # extract only the chunk including the opening and closing braces
             # generate the { or } if LLM has forgotten to do so
@@ -318,7 +328,7 @@ Ensure the following output keys are present in the json: {' '.join(list(new_out
                     raise Exception('Ensure output must be a json string beginning with { and ending with }')
                 
                 # do checks for keys and output format, remove escape characters so code can be run
-                end_dict = await check_key_async(res, output_format, new_output_format, delimiter, delimiter_num = 1, **kwargs)
+                end_dict = await check_key_async(res, output_format, new_output_format, delimiter, delimiter_num = 1, raw_llm_responses = raw_llm_responses, **kwargs)
                 
                 # run user defined custom checks now
                 for key in end_dict:
@@ -331,6 +341,8 @@ Ensure the following output keys are present in the json: {' '.join(list(new_out
                                 raise Exception(f'Output field of "{key}" does not meet requirement "{requirement}". Action needed: "{action_needed}"')
                             else:
                                 print('Requirement met\n\n')
+                
+                end_dict = add_additional_data_to_response(llm_responses=raw_llm_responses, response_dict=end_dict)
                 if return_as_json:
                     return json.dumps(end_dict, ensure_ascii=False)
                 else:
@@ -341,7 +353,7 @@ Ensure the following output keys are present in the json: {' '.join(list(new_out
                 print("An exception occurred:", str(e))
                 print("Current invalid json format:", res)
 
-        return {}
+        return add_additional_data_to_response(llm_responses=raw_llm_responses, response_dict={})
 
 ### Legacy Support ###
 # alternative names for strict_json
