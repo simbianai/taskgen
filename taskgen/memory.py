@@ -26,6 +26,7 @@ from taskgen.utils import ensure_awaitable, get_source_code_for_func, top_k_inde
 ## Base Template ##
 ###################
 
+
 class MemoryTemplate(ABC):
     """A generic template provided for all memories"""
 
@@ -48,7 +49,7 @@ class MemoryTemplate(ABC):
     def retrieve(self, task: str):
         """Retrieves some memories according to task"""
         pass
-    
+
     ## Some utility functions
     def read_file(self, filepath, text_splitter=None):
         if ".xls" in filepath:
@@ -97,11 +98,13 @@ class MemoryTemplate(ABC):
             text_list.append(para.text)
         return "\n".join(text_list)
 
+
 ########################
 ## In-house vector db ##
 ########################
 
 ### BaseMemory is VectorDB that is natively implemented, but not optimised. This will be used for function-based RAG and other kinds of RAG that are not natively text-based. For more optimised memory, check out ChromaDbMemory
+
 
 class BaseMemory(MemoryTemplate):
     """Retrieves top k memory items based on task. This is an in-house, unoptimised, vector db
@@ -273,7 +276,7 @@ class AsyncMemory(BaseMemory):
         Returns the memory list items corresponding to top_k matches"""
         # if there is no need to filter because top_k is already more or equal to memory size, just return memory
         if self.top_k >= len(self.memory):
-            return copy.deepcopy(self.memory)
+            return copy.copy(self.memory)
 
         # otherwise, perform filtering
         else:
@@ -299,22 +302,33 @@ class AsyncMemory(BaseMemory):
         top_k_indices = res[f"top_{self.top_k}_list"]
         return [self.memory[index] for index in top_k_indices]
 
+
 ######################
 ## Chroma vector db ##
 ######################
 
 ## TODO: Make this non-OpenAI dependent
-    
+
+
 class BaseChromaDbMemory(MemoryTemplate):
-    ''' Takes in the following parameters:
+    """Takes in the following parameters:
     `collection_name`: str. Compulsory. Name of the memory. Need to provide a unique name so that we can disambiguate between collections
     `client` - Default: None. ChromaDB client to use, if any
     `embedding_model`: Name of OpenAI's embedding_model to use with ChromaDB. Default OpenAI "text-embedding-3-small"
     `top_k`: Number of elements to retrieve. Default: 3
     `mapper`: Function. Maps the memory value to the embedded value. We do not need to embed the whole value, so this will serve as a way to tell us what to embed. Default: lambda x: x
-    `pre_delete`: Bool. Default: False. If set to True, delete collection with all data inside it when initialising'''
+    `pre_delete`: Bool. Default: False. If set to True, delete collection with all data inside it when initialising
+    """
 
-    def __init__(self, collection_name, client=None, embedding_model="text-embedding-3-small", top_k=3, mapper=lambda x: x, pre_delete=False):
+    def __init__(
+        self,
+        collection_name,
+        client=None,
+        embedding_model="text-embedding-3-small",
+        top_k=3,
+        mapper=lambda x: x,
+        pre_delete=False,
+    ):
         # Evaluate async client for chroma db for storage
         self.client = client or chromadb.PersistentClient()
         self.embedding_model = embedding_model
@@ -332,7 +346,7 @@ class BaseChromaDbMemory(MemoryTemplate):
             self.collection = self.client.get_or_create_collection(
                 self.collection_name, embedding_function=self.embedding_function
             )
-       
+
     @abstractmethod
     def get_openai_client(self):
         pass
@@ -352,17 +366,19 @@ class BaseChromaDbMemory(MemoryTemplate):
         for memory in memories:
             # retrieve up to top_k memories to remove
             retrieved_ = self.collection.query(
-                query_texts=[memory], n_results = min(self.top_k, max_count)
+                query_texts=[memory], n_results=min(self.top_k, max_count)
             )
             removed = False
-            for document, retrieved_id in zip(retrieved_["documents"][0], retrieved_["ids"][0]):
+            for document, retrieved_id in zip(
+                retrieved_["documents"][0], retrieved_["ids"][0]
+            ):
                 # only remove on exact match
                 if document == memory:
                     self.collection.delete([retrieved_id])
-                    print(f'Removing memory: {memory}')
+                    print(f"Removing memory: {memory}")
                     removed = True
             if not removed:
-                print(f'No memory to remove: {memory}')
+                print(f"No memory to remove: {memory}")
 
     def remove_by_id(self, ids):
         if not isinstance(ids, list):
@@ -381,10 +397,13 @@ class BaseChromaDbMemory(MemoryTemplate):
     def retrieve(self, task: str, filter=[]):
         max_count = self.collection.count()
         results = self.collection.query(
-        query_texts=[task], n_results=min(self.top_k, max_count), where=filter
-        )['metadatas'][0]
+            query_texts=[task], n_results=min(self.top_k, max_count), where=filter
+        )["metadatas"][0]
 
-        return [mem_item['taskgen_content'] if 'taskgen_content' in mem_item else mem_item for mem_item in results]
+        return [
+            mem_item["taskgen_content"] if "taskgen_content" in mem_item else mem_item
+            for mem_item in results
+        ]
         # return self.collection.query(
         #     query_texts=[task], n_results=self.top_k, where=filter
         # )
@@ -398,6 +417,7 @@ class ChromaDbMemory(BaseChromaDbMemory):
 
     def get_openai_client(self):
         from openai import OpenAI
+
         return OpenAI()
 
     def get_or_create_collection(self):
@@ -426,12 +446,12 @@ class ChromaDbMemory(BaseChromaDbMemory):
             memory_strings = [mapper(memory) for memory in new_memories]
         else:
             memory_strings = [self.mapper(memory) for memory in new_memories]
-        
+
         if all(isinstance(item, dict) for item in new_memories):
             metadatas = new_memories
         else:
             metadatas = [{"taskgen_content": item} for item in new_memories]
-        
+
         return self.append_memory_list(memory_strings, metadatas)
 
     def append_memory_list(self, new_memories: list[str], metadatas: list[dict] = None):
@@ -457,6 +477,7 @@ class AsyncChromaDbMemory(BaseChromaDbMemory):
 
     def get_openai_client(self):
         from openai import AsyncOpenAI
+
         return AsyncOpenAI()
 
     async def get_or_create_collection(self):
@@ -489,12 +510,12 @@ class AsyncChromaDbMemory(BaseChromaDbMemory):
             memory_strings = [mapper(memory) for memory in new_memories]
         else:
             memory_strings = [self.mapper(memory) for memory in new_memories]
-        
+
         if all(isinstance(item, dict) for item in new_memories):
             metadatas = new_memories
         else:
             metadatas = [{"taskgen_content": item} for item in new_memories]
-        
+
         return await self.append_memory_list(memory_strings, metadatas)
 
     async def append_memory_list(
@@ -537,17 +558,19 @@ class AsyncChromaDbMemory(BaseChromaDbMemory):
             for memory in memories:
                 # retrieve up to top_k memories to remove
                 retrieved_ = await self.collection.query(
-                    query_texts=[memory], n_results = n_results_num
+                    query_texts=[memory], n_results=n_results_num
                 )
                 removed = False
-                for document, retrieved_id in zip(retrieved_["documents"][0], retrieved_["ids"][0]):
+                for document, retrieved_id in zip(
+                    retrieved_["documents"][0], retrieved_["ids"][0]
+                ):
                     # only remove on exact match
                     if document == memory:
                         await self.collection.delete([retrieved_id])
-                        print(f'Removing memory: {memory}')
+                        print(f"Removing memory: {memory}")
                         removed = True
                 if not removed:
-                    print(f'No memory to remove: {memory}')
+                    print(f"No memory to remove: {memory}")
         else:
             return super().remove(memories)
 
@@ -570,10 +593,17 @@ class AsyncChromaDbMemory(BaseChromaDbMemory):
             max_count = self.collection.count()
             n_results_num = min(self.top_k, max_count)
             results = await self.collection.query(
-            query_texts=[task], n_results = n_results_num, where=filter
-            )['metadatas'][0]
+                query_texts=[task], n_results=n_results_num, where=filter
+            )["metadatas"][0]
 
-            return [mem_item['taskgen_content'] if 'taskgen_content' in mem_item else mem_item for mem_item in results]
-        
+            return [
+                (
+                    mem_item["taskgen_content"]
+                    if "taskgen_content" in mem_item
+                    else mem_item
+                )
+                for mem_item in results
+            ]
+
         else:
             return super().retrieve(task, filter)
