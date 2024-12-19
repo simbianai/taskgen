@@ -53,7 +53,7 @@ def extract_usage_obj(llm_response, host: str) -> dict:
     ''' Extract the usage object from the response '''
     usage_obj = None
     
-    if host == "openai":
+    if host == "openai" or host == "azure-openai":
         if not isinstance(llm_response, ChatCompletion):
             return {"error": "LLM response is not an instance of CompletionUsage class"}
         usage_obj = llm_response.usage
@@ -62,6 +62,7 @@ def extract_usage_obj(llm_response, host: str) -> dict:
             return {"error": "Usage object is not an instance of CompletionUsage class"}
         usage_obj = usage_obj.model_dump()
         usage_obj["model_name"] = llm_response.model
+        usage_obj["host"] = host
     else:
         usage_obj = {"error": "Unknown host"}
 
