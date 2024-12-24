@@ -233,7 +233,7 @@ async def chat_async(system_prompt: str, user_prompt: str, raw_llm_responses: di
 ### Main Functions ###
     
     
-async def strict_json_async(system_prompt: str, user_prompt: str, output_format: dict, return_as_json = False, custom_checks: dict = None, check_data = None, delimiter: str = '###', num_tries: int = 3, openai_json_mode: bool = False, **kwargs):
+async def strict_json_async(system_prompt: str, user_prompt: str, output_format: dict, return_as_json = False, custom_checks: dict = None, check_data = None, delimiter: str = '###', num_tries: int = 3, openai_json_mode: bool = False, include_additional_data: bool = False, **kwargs):
     r""" Ensures that OpenAI will always adhere to the desired output JSON format defined in output_format.
     Uses rule-based iterative feedback to ask GPT to self-correct.
     Keeps trying up to num_tries it it does not. Returns empty JSON if unable to after num_tries iterations.
@@ -279,7 +279,8 @@ async def strict_json_async(system_prompt: str, user_prompt: str, output_format:
         
         try:
             response_dict = json.loads(res)
-            response_dict = add_additional_data_to_response(llm_responses=raw_llm_responses, response_dict=response_dict)
+            if include_additional_data:
+                response_dict = add_additional_data_to_response(llm_responses=raw_llm_responses, response_dict=response_dict)
             if not response_dict:
                 raise Exception('Empty JSON response')
 
@@ -344,8 +345,8 @@ Ensure the following output keys are present in the json: {' '.join(list(new_out
                                 raise Exception(f'Output field of "{key}" does not meet requirement "{requirement}". Action needed: "{action_needed}"')
                             else:
                                 print('Requirement met\n\n')
-                
-                end_dict = add_additional_data_to_response(llm_responses=raw_llm_responses, response_dict=end_dict)
+                if include_additional_data:
+                    end_dict = add_additional_data_to_response(llm_responses=raw_llm_responses, response_dict=end_dict)
                 if return_as_json:
                     return json.dumps(end_dict, ensure_ascii=False)
                 else:
@@ -356,7 +357,7 @@ Ensure the following output keys are present in the json: {' '.join(list(new_out
                 print("An exception occurred:", str(e))
                 print("Current invalid json format:", res)
 
-        return add_additional_data_to_response(llm_responses=raw_llm_responses, response_dict={})
+        return add_additional_data_to_response(llm_responses=raw_llm_responses, response_dict={}) if include_additional_data else {}
 
 ### Legacy Support ###
 # alternative names for strict_json
