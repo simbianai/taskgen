@@ -1,0 +1,60 @@
+name: check & build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+    # Use github.run_id on main branch
+    # Use github.event.pull_request.number on pull requests, so it's unique per pull request
+    # Use github.ref on other branches, so it's unique per branch
+    group: ${{ github.workflow }}-${{ github.ref_protected && github.run_id || github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
+
+jobs:
+  checkstyle:
+    runs-on: ubuntu-latest
+    env:
+      EXCLUDE: '^static/.*|assets/.*|/migrations/.*|\.min\.js$|\.min\.css$|\.css\.map$|\.min\.js$|\.js\.map$|\.svg$'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      #- name: Install isort and black
+      #  run: pip install isort==5.13.2 black==24.10.0
+
+      #- name: Run isort
+      #  run: |
+      #    git ls-files -- '*.py' | grep -Ev $EXCLUDE | xargs isort --profile black --check-only --diff
+     
+      #- name: Run black
+      #  run: |
+      #    git ls-files -- '*.py' | grep -Ev $EXCLUDE | xargs black --check --diff
+
+      #- name: Run ruff
+      #  run: |
+      #    make ruff
+
+  build:
+    needs: checkstyle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run build
+        run: |
+          ./build.sh
