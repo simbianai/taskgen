@@ -7,7 +7,7 @@ import uuid
 
 from taskgen.base import convert_to_dict, parse_response_llm_check, remove_unicode_escape, type_check_and_convert, wrap_with_angle_brackets
 
-from taskgen.utils import add_additional_data_to_response, ensure_awaitable
+from taskgen.utils import get_final_response, ensure_awaitable
 
 ### Helper Functions ###
 
@@ -279,10 +279,10 @@ async def strict_json_async(system_prompt: str, user_prompt: str, output_format:
         
         try:
             response_dict = json.loads(res)
-            if include_additional_data:
-                response_dict = add_additional_data_to_response(llm_responses=raw_llm_responses, response_dict=response_dict)
             if not response_dict:
                 raise Exception('Empty JSON response')
+
+            response_dict = get_final_response(raw_llm_responses, response_dict, include_additional_data)
 
             if return_as_json:
                 return json.dumps(response_dict)
@@ -345,8 +345,7 @@ Ensure the following output keys are present in the json: {' '.join(list(new_out
                                 raise Exception(f'Output field of "{key}" does not meet requirement "{requirement}". Action needed: "{action_needed}"')
                             else:
                                 print('Requirement met\n\n')
-                if include_additional_data:
-                    end_dict = add_additional_data_to_response(llm_responses=raw_llm_responses, response_dict=end_dict)
+                end_dict = get_final_response(raw_llm_responses, end_dict, include_additional_data)
                 if return_as_json:
                     return json.dumps(end_dict, ensure_ascii=False)
                 else:
@@ -357,7 +356,7 @@ Ensure the following output keys are present in the json: {' '.join(list(new_out
                 print("An exception occurred:", str(e))
                 print("Current invalid json format:", res)
 
-        return add_additional_data_to_response(llm_responses=raw_llm_responses, response_dict={}) if include_additional_data else {}
+        return get_final_response(raw_llm_responses, {}, include_additional_data)
 
 ### Legacy Support ###
 # alternative names for strict_json
