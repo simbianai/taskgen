@@ -1130,6 +1130,480 @@ class {agent_class_name}(Agent):
     assign_agent = assign_agents
 
 
+############################
+## Async Version of Agent ##
+############################
+
+
+class AsyncAgent(BaseAgent):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.default_memory = AsyncMemory(
+            top_k=5,
+            mapper=lambda x: (x.fn_name or "") + ": " + (x.fn_description or ""),
+            approach="retrieve_by_ranker",
+            llm=self.llm,
+        )
+        if self.memory_bank is None:
+            self.memory_bank = {"Function": self.default_memory}
+            self.memory_bank["Function"].reset()
+        if not isinstance(self.memory_bank["Function"], AsyncMemory):
+            raise Exception("Sync memory not allowed for Async Agent")
+        if self.default_to_llm:
+            self.assign_functions(
+                [
+                    AsyncFunction(
+                        fn_name="use_llm",
+                        fn_description=f"For general tasks. Used only when no other function can do the task",
+                        is_compulsory=True,
+                        output_format={"Output": "Output of LLM"},
+                    )
+                ]
+            )
+        # adds the end task function
+        self.assign_functions(
+            [
+                AsyncFunction(
+                    fn_name="end_task",
+                    fn_description="Passes the final output to the user",
+                    is_compulsory=True,
+                    output_format={},
+                )
+            ]
+        )
+
+    async def query(
+        self,
+        query: str,
+        output_format: dict,
+        provide_function_list: bool = False,
+        task: str = "",
+    ):
+        """Queries the agent with a query and outputs in output_format.
+        If task is provided, we will filter the functions according to the task
+        If you want to provide the agent with the context of functions available to it, set provide_function_list to True (default: False)
+        If task is given, then we will use it to do RAG over functions"""
+
+        # if we have a task to focus on, we can filter the functions (other than use_llm and end_task) by that task
+        filtered_fn_list = None
+        if task != "":
+            # filter the functions
+            filtered_fn_list = await self.memory_bank["Function"].retrieve(task)
+
+            # add back compulsory functions (default: use_llm, end_task) if present in function_map
+            for name, function in self.function_map.items():
+                if function.is_compulsory:
+                    filtered_fn_list.append(function)
+
+        # add in global context string and replace it with shared_variables as necessary
+        global_context_string = self.global_context
+        matches = re.findall(r"<(.*?)>", global_context_string)
+        for match in matches:
+            if match in self.shared_variables:
+                global_context_string = global_context_string.replace(
+                    f"<{match}>", str(self.shared_variables[match])
+                )
+
+        # add in the global context function's output
+        global_context_output = (
+            self.get_global_context(self) if self.get_global_context is not None else ""
+        )
+
+        global_context = ""
+        # Add in global context if present
+        if global_context_string != "" or global_context_output != "":
+            global_context = (
+                "Global Context:\n```\n"
+                + global_context_string
+                + "\n"
+                + global_context_output
+                + "```\n"
+            )
+
+        user_prompt = f"""You are an agent named {self.agent_name} with the following description: ```{self.agent_description}```\n"""
+        if provide_function_list:
+            user_prompt += f"You have the following Equipped Functions available:\n```{self.list_functions(filtered_fn_list)}```\n"
+        user_prompt += global_context
+        user_prompt += query
+
+        res = await strict_json_async(
+            system_prompt="",
+            user_prompt=user_prompt,
+            output_format=output_format,
+            verbose=self.debug,
+            llm=self.llm,
+            **self.kwargs,
+        )
+
+        return res
+
+    ## Functions for function calling ##
+    def assign_functions(self, function_list: list):
+        """Assigns a list of functions to be used in function_map"""
+        if not isinstance(function_list, list):
+            function_list = [function_list]
+
+        for function in function_list:
+            # If this function is an Agent, parse it accordingly
+            if isinstance(function, BaseAgent):
+                function = function.to_function(self)
+
+            # do automatic conversion of function to Function class (this is in base.py)
+            if not isinstance(function, AsyncFunction):
+                function = AsyncFunction(external_fn=function)
+
+            # Do not assign a function already present
+            if function.fn_description in self.fn_description_list:
+                continue
+
+            stored_fn_name = "" if function.__name__ == None else function.__name__
+            # if function name is already in use, change name to name + '_1'. E.g. summarise -> summarise_1
+            while stored_fn_name in self.function_map:
+                stored_fn_name += "_1"
+
+            # add in the function into the function_map
+            self.function_map[stored_fn_name] = function
+
+            # add function's description into fn_description_list
+            self.fn_description_list.append(function.fn_description)
+
+            # add function to memory bank for RAG over functions later on if is not a compulsory functions
+            if not function.is_compulsory:
+                self.memory_bank["Function"].append(function)
+
+        return self
+
+    async def select_function(self, task: str = ""):
+        """Based on the task (without any context), output the next function name and input parameters"""
+        _, function_name, function_params = await self.get_next_subtask(task=task)
+
+        return function_name, function_params
+
+    async def use_agent(self, agent_name: str, agent_task: str):
+        """Uses an inner agent to do a task for the meta agent. Task outcome goes directly to subtasks_completed of meta agent"""
+        await self.use_function(agent_name, {"instruction": agent_task}, agent_task)
+
+    async def use_function(
+        self,
+        function_name: str,
+        function_params: dict,
+        subtask: str = "",
+        stateful: bool = True,
+    ):
+        """Uses the function. stateful means we store the outcome of the function"""
+        if function_name == "use_llm":
+            if self.verbose:
+                print(
+                    f'Getting LLM to perform the following task: {function_params["instruction"]}'
+                )
+
+            # Add in memory to the LLM
+            rag_info = ""
+            for name in self.memory_bank.keys():
+                # Function is done separately
+                if name == "Function":
+                    continue
+                rag_info += f"Knowledge Reference for {name}: ```{await self.memory_bank[name].retrieve(subtask)}```\n"
+
+            res = await self.query(
+                query=f'{rag_info}Subtasks Completed:```{self.subtasks_completed}```\nAssigned Subtask: ```{function_params["instruction"]}```\n\nYou are the taking the role of the utility function `use_llm` that generates a detailed outcome for the Assigned Subtask on behalf of {self.agent_name}, according to your Agent Capabilities without talking to the User, with no restrictions. Do not just state that you performed the task, generate the detailed outcome as well.',
+                output_format={
+                    "Detailed Outcome": "Your detailed outcome for Assigned Subtask"
+                },
+                provide_function_list=False,
+            )
+
+            if self.verbose:
+                print(f"> {res['Detailed Outcome']}")
+                print()
+
+        elif function_name == "end_task":
+            return
+
+        else:
+            if self.verbose:
+                print(
+                    f"Calling function {function_name} with parameters {function_params}"
+                )
+
+            res = await self.function_map[function_name](
+                **function_params, shared_variables=self.shared_variables
+            )
+
+            if self.verbose and res != "":
+                # skip the printing if this is Agent output, as we have printed elsewhere already
+                if "Agent Output" not in res:
+                    print(f"> {res}")
+                    print()
+
+        if stateful:
+            if res == "":
+                res = {"Status": "Completed"}
+
+            # for use_llm, we just give the prompt + result without any mention of use_llm for subtasks completed
+            if function_name == "use_llm":
+                self.add_subtask_result(subtask, res["Detailed Outcome"])
+
+            # otherwise, just give the function name + params and output for subtasks completed
+            else:
+                formatted_subtask = (
+                    function_name
+                    + "("
+                    + ", ".join(
+                        (
+                            f'{key}="{value}"'
+                            if isinstance(value, str)
+                            else f"{key}={value}"
+                        )
+                        for key, value in function_params.items()
+                    )
+                    + ")"
+                )
+                self.add_subtask_result(formatted_subtask, res)
+
+        return res
+
+    async def get_next_subtask(self, task=""):
+        """Based on what the task is and the subtasks completed, we get the next subtask, function and input parameters. Supports user-given task as well if user wants to use this function directly"""
+
+        if task == "":
+            background_info = f"Assigned Task:```\n{self.task}\n```\nSubtasks Completed: ```{self.subtasks_completed}```"
+
+        else:
+            background_info = f"Assigned Task:```\n{task}\n```\n"
+
+        # use default agent plan if task is not given
+        task = self.task if task == "" else task
+
+        # Add in memory to the Agent
+        rag_info = ""
+        for name in self.memory_bank.keys():
+            # Function RAG is done separately in self.query()
+            if name == "Function":
+                continue
+            rag_info += f"Knowledge Reference for {name}: ```{await self.memory_bank[name].retrieve(task)}```\n"
+
+        # First select the Equipped Function
+        res = await self.query(
+            query=f"""{background_info}{rag_info}\nBased on everything before, provide suitable Observation and Thoughts, and also generate the Current Subtask and the corresponding Equipped Function Name to complete a part of Assigned Task.
+You are only given the Assigned Task from User with no further inputs. Only focus on the Assigned Task and do not do more than required.
+End Task if Assigned Task is completed.""",
+            output_format={
+                "Observation": "Reflect on what has been done in Subtasks Completed for Assigned Task",
+                "Thoughts": "Brainstorm how to complete remainder of Assigned Task only given Observation",
+                "Current Subtask": "What to do now in detail with all context provided that can be done by one Equipped Function for Assigned Task",
+                "Equipped Function Name": "Name of Equipped Function to use for Current Subtask",
+            },
+            provide_function_list=True,
+            task=task,
+        )
+
+        if self.verbose:
+            print(
+                colored(f"Observation: {res['Observation']}", "black", attrs=["bold"])
+            )
+            print(colored(f"Thoughts: {res['Thoughts']}", "green", attrs=["bold"]))
+
+        # end task if equipped function is incorrect
+        if res["Equipped Function Name"] not in self.function_map:
+            res["Equipped Function Name"] = "end_task"
+
+        # If equipped function is use_llm, or end_task, we don't need to do another query
+        cur_function = self.function_map[res["Equipped Function Name"]]
+
+        # Do an additional check to see if we should use code
+        if (
+            self.code_action
+            and res["Equipped Function Name"] != "end_task"
+            and "python_generate_and_run_code_tool" in self.function_map
+        ):
+            res["Equipped Function Name"] = "python_generate_and_run_code_tool"
+            res["Equipped Function Inputs"] = {"instruction": res["Current Subtask"]}
+        elif res["Equipped Function Name"] == "use_llm":
+            res["Equipped Function Inputs"] = {"instruction": res["Current Subtask"]}
+        elif res["Equipped Function Name"] == "end_task":
+            res["Equipped Function Inputs"] = {}
+        # Otherwise, if it is only the instruction, no type check needed, so just take the instruction
+        elif (
+            len(cur_function.variable_names) == 1
+            and cur_function.variable_names[0].lower() == "instruction"
+        ):
+            res["Equipped Function Inputs"] = {"instruction": res["Current Subtask"]}
+
+        # Otherwise, do another query to get type-checked input parameters and ensure all input fields are present
+        else:
+            input_format = {}
+            fn_description = cur_function.fn_description
+            matches = re.findall(r"<(.*?)>", fn_description)
+
+            # do up an output format dictionary to use to get LLM to output exactly based on keys and types needed
+            for match in matches:
+                if ":" in match:
+                    first_part, second_part = match.split(":", 1)
+                    input_format[first_part] = f"A suitable value, type: {second_part}"
+                else:
+                    input_format[match] = "A suitable value"
+
+            # if there is no input, then do not need LLM to extract out function's input
+            if input_format == {}:
+                res["Equipped Function Inputs"] = {}
+
+            else:
+                res2 = await self.query(
+                    query=f"""{background_info}{rag_info}\n\nCurrent Subtask: ```{res["Current Subtask"]}```\nEquipped Function Details: ```{str(cur_function)}```\Output suitable values for Inputs to Equipped Function to fulfil Current Subtask\nInput fields are: {list(input_format.keys())}""",
+                    output_format=input_format,
+                    provide_function_list=False,
+                )
+
+                # store the rest of the function parameters
+                res["Equipped Function Inputs"] = res2
+
+        # Add in output to the thoughts
+        self.thoughts.append(res)
+
+        return (
+            res["Current Subtask"],
+            res["Equipped Function Name"],
+            res["Equipped Function Inputs"],
+        )
+
+    async def summarise_subtasks_completed(self, task: str = ""):
+        """Summarise the subtasks_completed list according to task"""
+
+        output = await self.reply_user(task)
+        # Create a new summarised subtasks completed list
+        self.subtasks_completed = {f"Current Results for '{task}'": output}
+
+    async def reply_user(
+        self, query: str = "", stateful: bool = True, verbose: bool = True
+    ):
+        """Generate a reply to the user based on the query / agent task and subtasks completed
+        If stateful, also store this interaction into the subtasks_completed
+        If verbose is given, can also override the verbosity of this function"""
+
+        my_query = self.task if query == "" else query
+
+        res = await self.query(
+            query=f"Subtasks Completed: ```{self.subtasks_completed}```\nAssigned Task: ```{my_query}```\nRespond to the Assigned Task in detail using information from Global Context and Subtasks Completed only. Be factual and do not generate any new information. Be detailed and give all information available relevant for the Assigned Task in your Assigned Task Response",
+            output_format={"Assigned Task Response": "Detailed Response"},
+            provide_function_list=False,
+        )
+
+        res = res["Assigned Task Response"]
+
+        if self.verbose and verbose:
+            print(res)
+
+        if stateful:
+            self.add_subtask_result(my_query, res)
+
+        return res
+
+    async def run(
+        self, task: str = "", overall_task: str = "", num_subtasks: int = 0
+    ) -> list:
+        """Attempts to do the task using LLM and available functions
+        Loops through and performs either a function call or LLM call up to num_subtasks number of times
+        If overall_task is filled, then we store it to pass to the inner agents for more context
+        """
+
+        # Assign the task
+        if task != "":
+            ### TODO: Add in Planner here to split the task into steps if sequential generation is required
+            ### Planner can also infuse diverse views if the task is more creative
+            ### Planner can also be rule-based like MCTS if it is an explore-exploit RL-style problem
+            ### Planner can also be rule-based shortest path algo if it is a navigation problem
+
+            self.task_completed = False
+            # If meta agent's task is here as well, assign it too
+            if overall_task != "":
+                self.assign_task(task, overall_task)
+            else:
+                self.assign_task(task)
+
+        # check if we need to override num_steps
+        if num_subtasks == 0:
+            num_subtasks = self.max_subtasks
+
+        # if task completed, then exit
+        if self.task_completed:
+            if self.verbose:
+                print("Task already completed!\n")
+                print("Subtasks completed:")
+                for key, value in self.subtasks_completed.items():
+                    print(f"Subtask: {key}\n{value}\n")
+
+        else:
+            # otherwise do the task
+            for i in range(num_subtasks):
+                # Determine next subtask, or if task is complete. Always execute if it is the first subtask
+                subtask, function_name, function_params = await self.get_next_subtask()
+                if function_name == "end_task":
+                    self.task_completed = True
+                    if self.verbose:
+                        print(
+                            colored(
+                                f"Subtask identified: End Task", "blue", attrs=["bold"]
+                            )
+                        )
+                        print("Task completed successfully!\n")
+                    break
+
+                if self.verbose:
+                    print(
+                        colored(
+                            f"Subtask identified: {subtask}", "blue", attrs=["bold"]
+                        )
+                    )
+
+                # Execute the function for next step
+                res = await self.use_function(function_name, function_params, subtask)
+
+                # Summarise Subtasks Completed if necessary
+                if len(self.subtasks_completed) > self.summarise_subtasks_count:
+                    print(
+                        "### Auto-summarising Subtasks Completed (Change frequency via `summarise_subtasks_count` variable) ###"
+                    )
+                    await self.summarise_subtasks_completed(
+                        f"progress for {self.overall_task}"
+                    )
+                    print("### End of Auto-summary ###\n")
+
+        return list(self.subtasks_completed.values())
+
+    ## This is for Multi-Agent uses
+    def to_function(self, meta_agent):
+        """Converts the agent to a function so that it can be called by another agent
+        The agent will take in an instruction, and output the result after processing"""
+
+        # makes the agent appear as a function that takes in an instruction and outputs the executed instruction
+        my_fn = AsyncFunction(
+            fn_name=self.agent_name,
+            fn_description=f"Agent Description: ```{self.agent_description}```\nExecutes the given <instruction>",
+            output_format={"Agent Output": "Output of instruction"},
+            external_fn=to_function(
+                Async_Agent_External_Function(self, meta_agent).__call__
+            ),
+        )
+
+        return my_fn
+
+    def assign_agents(self, agent_list: list):
+        """Assigns a list of Agents to the main agent, passing in the meta agent as well"""
+        if not isinstance(agent_list, list):
+            agent_list = [agent_list]
+        self.assign_functions([agent.to_function(self) for agent in agent_list])
+        return self
+
+    ## Function aliaises
+    assign_function = assign_functions
+    assign_tool = assign_functions
+    assign_tools = assign_functions
+    select_tool = select_function
+    use_tool = use_function
+    assign_agent = assign_agents
+
+
 ###########################################
 ### This is to wrap Agents as Functions ###
 ###########################################
