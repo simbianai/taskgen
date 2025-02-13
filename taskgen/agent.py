@@ -852,6 +852,7 @@ End Task if Assigned Task is completed.""",
                     function.external_fn.agent._get_python_rep_and_supporting_nodes(
                         directory, sub_agent_class_name
                     )
+                )
 
                 sub_agent_contrib_path = f"{directory}/{sub_agent_class_name}.py"
                 supporting_nodes.extend(sub_agent_supporting_nodes)
