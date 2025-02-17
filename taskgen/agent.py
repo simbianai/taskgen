@@ -136,7 +136,8 @@ class BaseAgent:
         if self.verbose:
             print(f"Agent saved to {filename}")
 
-    async def load_agent(self, filename: str):
+    @classmethod
+    async def load_agent(cls, filename: str):
         """Loads and reconstructs the agent from a saved file"""
         if not isinstance(filename, str) or not filename.endswith('.pkl'):
             raise Exception("Filename must be a string ending with .pkl")
@@ -146,10 +147,9 @@ class BaseAgent:
             encoded_state = file.read()
 
         # Deserialize and reconstruct the agent
-        loaded_agent = await self.__class__.deserialize_agent(encoded_state)
+        loaded_agent = await cls.deserialize_agent(encoded_state)
         
-        if self.verbose:
-            print(f"Agent loaded from {filename}")
+        print(f"Agent loaded from {filename}")
         
         return loaded_agent
 
