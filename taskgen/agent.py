@@ -7,6 +7,7 @@ import dill as pickle
 import re
 import subprocess
 import sys
+import base64
 
 from termcolor import colored
 import requests
@@ -120,33 +121,37 @@ class BaseAgent:
         self.task_completed = False
         self.overall_plan = None
 
-    def save_agent(self, filename: str):
-        """Saves the entire agent to filename for reuse next time"""
+    async def save_agent(self, filename: str):
+        """Saves the serialized agent state to a file for reuse next time"""
+        if not isinstance(filename, str) or not filename.endswith('.pkl'):
+            raise Exception("Filename must be a string ending with .pkl")
 
-        if not isinstance(filename, str):
-            if filename[-4:] != ".pkl":
-                raise Exception("Filename is not ending with .pkl")
-            return
+        # Serialize the agent state
+        encoded_state = await self.serialize_agent()
 
-        # Open a file in write-binary mode
-        with open(filename, "wb") as file:
-            # Use pickle.dump() to save the dictionary to the file
-            pickle.dump(self, file)
+        # Save the encoded state to file
+        with open(filename, "w") as file:
+            file.write(encoded_state)
 
-        print(f"Agent saved to {filename}")
+        if self.verbose:
+            print(f"Agent saved to {filename}")
 
-    def load_agent(self, filename: str):
-        """Loads the entire agent from filename"""
+    @classmethod
+    async def load_agent(cls, filename: str):
+        """Loads and reconstructs the agent from a saved file"""
+        if not isinstance(filename, str) or not filename.endswith('.pkl'):
+            raise Exception("Filename must be a string ending with .pkl")
 
-        if not isinstance(filename, str):
-            if filename[-4:] != ".pkl":
-                raise Exception("Filename is not ending with .pkl")
-            return
+        # Read the encoded state from file
+        with open(filename, "r") as file:
+            encoded_state = file.read()
 
-        with open(filename, "rb") as file:
-            self = pickle.load(file)
-            print(f"Agent loaded from {filename}")
-            return self
+        # Deserialize and reconstruct the agent
+        loaded_agent = await cls.deserialize_agent(encoded_state)
+        
+        print(f"Agent loaded from {filename}")
+        
+        return loaded_agent
 
     def status(self):
         """Prints prettily the update of the agent's status.
@@ -237,6 +242,60 @@ class BaseAgent:
     print_tools = print_functions
     print_tool = print_functions
     remove_tool = remove_function
+
+    async def serialize_agent(self) -> str:
+        """Serialize essential agent state as a simple dict"""
+        # Create a copy of shared_variables without the agent reference
+        filtered_shared_vars = {k: v for k, v in self.shared_variables.items() if k != "agent"}
+
+        serializable_state = {
+            "agent_name": self.agent_name,
+            "agent_description": self.agent_description,
+            "shared_variables": filtered_shared_vars,
+            "subtasks_completed": self.subtasks_completed,
+            "global_context": self.global_context,
+            "task": self.task,
+            "task_completed": self.task_completed,
+            "memory": {
+                name: {"memory": bank.memory, "top_k": getattr(bank, "top_k", None)}
+                for name, bank in self.memory_bank.items()
+                if name != "Function"  # Skip Function memory as it contains unpicklable objects
+            },
+            "function_descriptions": self.fn_description_list,
+        }
+
+        return base64.b64encode(pickle.dumps(serializable_state)).decode("utf-8")
+
+    @classmethod 
+    async def deserialize_agent(cls, encoded_state: str, get_base_agent=None):
+        """Reconstruct agent from serialized state"""
+        state = pickle.loads(base64.b64decode(encoded_state))
+        
+        # Create new agent with basic state
+        if get_base_agent:
+            agent = await get_base_agent()  # Get pre-configured agent if provided
+        else:
+            agent = cls()  # Create blank agent
+            
+        # Restore state
+        agent.agent_name = state["agent_name"]
+        agent.agent_description = state["agent_description"]
+        agent.shared_variables = state["shared_variables"]
+        agent.shared_variables["agent"] = agent  # Restore agent reference
+        agent.subtasks_completed = state["subtasks_completed"]
+        agent.global_context = state["global_context"]
+        agent.task = state["task"]
+        agent.task_completed = state["task_completed"]
+        agent.fn_description_list = state["function_descriptions"]
+
+        # Restore memory bank data (except Function memory which is handled by get_base_agent)
+        for name, memory_data in state["memory"].items():
+            if name in agent.memory_bank and name != "Function":
+                agent.memory_bank[name].memory = memory_data["memory"]
+                if memory_data["top_k"] is not None:
+                    agent.memory_bank[name].top_k = memory_data["top_k"]
+
+        return agent
 
 
 ###########################
