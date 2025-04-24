@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "taskgen-ai"
-version = "3.3.8"
+version = "3.3.7"
 authors = [
   { name="John Tan Chong Min", email="tanchongmin@gmail.com" },
 ]
@@ -19,7 +19,7 @@ classifiers = [
 dependencies = ["openai>=1.3.6",
 "langchain", "dill>=0.3.7", "termcolor>=2.3.0", "requests",
 "PyPDF2", "python-docx", "pandas", "xlrd", "chromadb>=0.5.2",
-"asyncio", "opentelemetry-sdk>=1.22.0"]
+"asyncio", "opentelemetry-sdk==1.22.0"]
 
 [project.urls]
 Homepage = "https://github.com/simbianai/taskgen"
