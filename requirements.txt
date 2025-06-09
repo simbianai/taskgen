@@ -9,4 +9,5 @@ pandas
 xlrd
 chromadb>=0.5.2
 asyncio
-opentelemetry-sdk==1.22.0
+#this specific version due to pycti in sa
+opentelemetry-sdk~=1.32.0
