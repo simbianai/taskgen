@@ -4,7 +4,7 @@ import hashlib
 import os
 import time
 from typing import Any
-import PyPDF2
+import pypdf
 from docx import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import chromadb
@@ -82,7 +82,7 @@ class MemoryTemplate(ABC):
         # Open the PDF file
         text_list = []
         with open(filepath, "rb") as file:
-            pdf_reader = PyPDF2.PdfReader(file)
+            pdf_reader = pypdf.PdfReader(file)
             for page in pdf_reader.pages:
                 page_text = page.extract_text()
                 if page_text:  # Ensure there's text on the page

@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="taskgen",
-    version="3.3.7",
+    version="3.3.9",
     packages=find_packages(),
     install_requires=[
         "openai>=1.3.6",
@@ -10,7 +10,7 @@ setup(
         "dill>=0.3.7",
         "termcolor>=2.3.0",
         "requests",
-        "PyPDF2",
+        "pypdf~=5.7.0",
         "python-docx",
         "pandas",
         "chromadb",
