@@ -10,7 +10,7 @@ setup(
         "dill>=0.3.7",
         "termcolor>=2.3.0",
         "requests",
-        "PyPDF2",
+        "pypdf~=5.7.0",
         "python-docx",
         "pandas",
         "chromadb",

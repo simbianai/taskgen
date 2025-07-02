@@ -22,3 +22,9 @@ fi
 
 echo "-----------------------------------------------"
 echo "File ${WHL_FILE} created"
+
+# -- pyright --
+pip install -r requirements.txt
+pip check
+#pip install pyright==1.1.394
+#pyright
