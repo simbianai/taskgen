@@ -3,7 +3,7 @@ langchain
 dill>=0.3.9
 termcolor>=3.1.0
 requests
-pypdf~=5.8.0
+pypdf~=6.0.0
 python-docx
 pandas
 xlrd
