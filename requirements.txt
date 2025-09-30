@@ -7,7 +7,6 @@ pypdf~=6.0.0
 python-docx
 pandas
 xlrd
-chromadb>=1.0.15
 asyncio
 #this specific version due to pycti in sa
 opentelemetry-sdk~=1.32.1

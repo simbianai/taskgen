@@ -23,8 +23,6 @@ __all__ = [
     "Memory",
     "MemoryTemplate",
     "AsyncMemory",
-    "ChromaDbMemory",
-    "AsyncChromaDbMemory",
     "Agent",
     "AsyncAgent",
 ]
