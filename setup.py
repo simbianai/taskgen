@@ -13,9 +13,7 @@ setup(
         "pypdf~=6.0.0",
         "python-docx",
         "pandas",
-        "chromadb",
         "xlrd",
-        "chromadb>=1.0.15",
         "asyncio",
     ],
 )
