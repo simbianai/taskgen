@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "taskgen-ai"
-version = "3.4.0"
+version = "3.4.1"
 authors = [
   { name="John Tan Chong Min", email="tanchongmin@gmail.com" },
 ]
@@ -18,7 +18,7 @@ classifiers = [
 ]
 dependencies = ["openai>=1.59.6",
 "langchain", "dill>=0.3.9", "termcolor>=3.1.0", "requests",
-"pypdf~=6.0.0", "python-docx", "pandas", "xlrd",
+"python-docx", "pandas", "xlrd",
 "asyncio", "opentelemetry-sdk~=1.32.1"]
 
 [project.urls]
