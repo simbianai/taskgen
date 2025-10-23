@@ -4,7 +4,6 @@ import hashlib
 import os
 import time
 from typing import Any
-import pypdf
 from docx import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 # import chromadb
@@ -58,8 +57,8 @@ class MemoryTemplate(ABC):
             text = pd.read_csv(filepath).to_string()
         elif ".docx" in filepath:
             text = self.read_docx(filepath)
-        elif ".pdf" in filepath:
-            text = self.read_pdf(filepath)
+        # elif ".pdf" in filepath:
+        #     text = self.read_pdf(filepath)
         else:
             raise ValueError(
                 "File type not spported, supported file types: pdf, docx, csv, xls"
@@ -78,18 +77,18 @@ class MemoryTemplate(ABC):
         memories = [{"content": text, "filepath": filepath} for text in texts]
         return memories
 
-    def read_pdf(self, filepath):
-        # Open the PDF file
-        text_list = []
-        with open(filepath, "rb") as file:
-            pdf_reader = pypdf.PdfReader(file)
-            for page in pdf_reader.pages:
-                page_text = page.extract_text()
-                if page_text:  # Ensure there's text on the page
-                    text_list.append(page_text)
-                else:
-                    print("No text found on page")
-        return "\n".join(text_list)
+    # def read_pdf(self, filepath):
+    #     # Open the PDF file
+    #     text_list = []
+    #     with open(filepath, "rb") as file:
+    #         pdf_reader = pypdf.PdfReader(file)
+    #         for page in pdf_reader.pages:
+    #             page_text = page.extract_text()
+    #             if page_text:  # Ensure there's text on the page
+    #                 text_list.append(page_text)
+    #             else:
+    #                 print("No text found on page")
+    #     return "\n".join(text_list)
 
     def read_docx(self, filepath):
         doc = Document(filepath)
