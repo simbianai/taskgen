@@ -7,5 +7,5 @@ python-docx
 pandas
 xlrd
 asyncio
-#this specific version due to pycti in sa
-opentelemetry-sdk~=1.32.1
+#this specific version due to pycti in sa (updated for pycti 6.8.7)
+opentelemetry-sdk~=1.35.0
