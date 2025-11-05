@@ -1,9 +1,5 @@
-from ast import List
 import asyncio
-import hashlib
-import os
-import time
-from typing import Any
+from typing import Any, cast
 from docx import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 # import chromadb
@@ -45,7 +41,7 @@ class MemoryTemplate(ABC):
         """Clears all memories"""
 
     @abstractmethod
-    def retrieve(self, task: str):
+    def retrieve(self, task: str) -> Any:
         """Retrieves some memories according to task"""
         pass
 
@@ -122,7 +118,7 @@ class BaseMemory(MemoryTemplate):
 
     def __init__(
         self,
-        memory: list = None,
+        memory: list|None = None,
         top_k: int = 3,
         mapper=lambda x: x,
         approach="retrieve_by_ranker",
@@ -152,9 +148,9 @@ class BaseMemory(MemoryTemplate):
             memory_list = [memory_list]
         self.memory.extend(memory_list)
 
-    def remove(self, memory_to_remove):
+    def remove(self, existing_memory):
         """Removes a memory"""
-        self.memory.remove(memory_to_remove)
+        self.memory.remove(existing_memory)
 
     def reset(self):
         """Clears all memory"""
@@ -166,7 +162,7 @@ class BaseMemory(MemoryTemplate):
 
     def get_python_representation(self, include_memory_elements) -> str:
         """Returns a string representation of the object for debugging"""
-        return f"Memory(memory={self.memory if include_memory_elements else []}, top_k={self.top_k}, mapper={get_source_code_for_func(self.mapper)}, approach='{self.approach}', ranker={self.ranker.get_python_representation() if hasattr(self.ranker, 'get_python_representation') else 'None'})"
+        return f"Memory(memory={self.memory if include_memory_elements else []}, top_k={self.top_k}, mapper={get_source_code_for_func(self.mapper)}, approach='{self.approach}', ranker={self.ranker.get_python_representation() if self.ranker is not None and hasattr(self.ranker, 'get_python_representation') else 'None'})"
 
 
 class Memory(BaseMemory):
@@ -221,14 +217,14 @@ class Memory(BaseMemory):
     def retrieve_by_llm(self, task: str) -> list:
         """Performs retrieval via LLMs
         Returns the key list as well as the value list"""
-        res = strict_json(
+        res = cast(dict[str, Any], strict_json(
             f'You are to output the top {self.top_k} most similar list items in Memory relevant to this: ```{task}```\nMemory: {[f"{i}. {self.mapper(mem)}" for i, mem in enumerate(self.memory)]}',
             "",
             output_format={
                 f"top_{self.top_k}_list": f"Indices of top {self.top_k} most similar list items in Memory, type: list[int]"
             },
             llm=self.llm,
-        )
+        ))
         top_k_indices = res[f"top_{self.top_k}_list"]
         return [self.memory[index] for index in top_k_indices]
 
@@ -290,14 +286,14 @@ class AsyncMemory(BaseMemory):
     async def retrieve_by_llm(self, task: str) -> list:
         """Performs retrieval via LLMs
         Returns the key list as well as the value list"""
-        res = await strict_json_async(
+        res = cast(dict[str, Any], await strict_json_async(
             f'You are to output the top {self.top_k} most similar list items in Memory relevant to this: ```{task}```\nMemory: {[f"{i}. {self.mapper(mem)}" for i, mem in enumerate(self.memory)]}',
             "",
             output_format={
                 f"top_{self.top_k}_list": f"Indices of top {self.top_k} most similar list items in Memory, type: list[int]"
             },
             llm=self.llm,
-        )
+        ))
         top_k_indices = res[f"top_{self.top_k}_list"]
         return [self.memory[index] for index in top_k_indices]
 
