@@ -1,6 +1,7 @@
+import json
 import re
 import inspect
-from typing import get_type_hints
+from typing import Any, cast, get_type_hints
 
 from taskgen.base import strict_json
 from taskgen.base_async import strict_json_async
@@ -112,7 +113,7 @@ def get_fn_output(my_function) -> dict:
 class BaseFunction:
     def __init__(self,
                  fn_description: str = '', 
-                 output_format: dict = None,
+                 output_format: dict|None = None,
                  examples = None,
                  external_fn = None,
                  is_compulsory = False,
@@ -289,11 +290,11 @@ class Function(BaseFunction):
                 self.fn_name = self.external_fn.__name__
             # otherwise, generate name out
             else:
-                res = strict_json(system_prompt = "Output a function name to summarise the usage of this function.",
+                res = cast(dict[str, Any], strict_json(system_prompt = "Output a function name to summarise the usage of this function.",
                                   user_prompt = str(self.fn_description),
                                   output_format = {"Thoughts": "What function does", "Name": "Function name with _ separating words that summarises what function does"},
-                                 llm = self.llm,
-                                 **self.kwargs)
+                                    llm = self.llm,
+                                    **self.kwargs))
                 self.fn_name = res['Name']
          # change instance's name to function's name
         self.__name__ = self.fn_name
@@ -322,7 +323,7 @@ class Function(BaseFunction):
         # If strict_json function, do the function. 
         if self.external_fn is None:
             res = strict_json(system_prompt = self.fn_description,
-                            user_prompt = function_kwargs,
+                            user_prompt = json.dumps(function_kwargs),
                             output_format = self.output_format,
                             llm = self.llm,
                             **self.kwargs, **strict_json_kwargs)
@@ -373,11 +374,11 @@ class AsyncFunction(BaseFunction):
     async def async_init(self): 
         ''' This generates the name for the function using strict_json_async '''
         if self.fn_name is None:
-            res = await strict_json_async(system_prompt = "Output a function name to summarise the usage of this function.",
+            res = cast(dict[str, Any], await strict_json_async(system_prompt = "Output a function name to summarise the usage of this function.",
                               user_prompt = str(self.fn_description),
                               output_format = {"Thoughts": "What function does", "Name": "Function name with _ separating words that summarises what function does"},
                              llm = self.llm,
-                             **self.kwargs)
+                             **self.kwargs))
             self.fn_name = res['Name']
 
             # change instance's name to function's name
@@ -410,11 +411,11 @@ class AsyncFunction(BaseFunction):
                 
         # If strict_json function, do the function. 
         if self.external_fn is None:
-            res = await strict_json_async(system_prompt = self.fn_description,
-                            user_prompt = function_kwargs,
+            res = cast(dict[str, Any], await strict_json_async(system_prompt = self.fn_description,
+                            user_prompt = json.dumps(function_kwargs),
                             output_format = self.output_format,
                             llm = self.llm,
-                            **self.kwargs, **strict_json_kwargs)
+                            **self.kwargs, **strict_json_kwargs))
             
         # Else run the external function
         else:

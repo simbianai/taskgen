@@ -1,3 +1,4 @@
+from typing import Any, cast
 from taskgen.agent import Agent
 from taskgen.base import strict_json
 
@@ -22,7 +23,7 @@ class ConversationWrapper(Agent):
         
     - ConversationWrapper uses `chat()` which chats with the Agent and the Agent will perform actions and reply the chat message'''
     
-    def __init__(self, agent: Agent, persistent_memory: dict = None, person = 'User', conversation = None, num_past_conversation: int = 5, verbose: bool = True):
+    def __init__(self, agent: Agent, persistent_memory: dict|None = None, person = 'User', conversation = None, num_past_conversation: int = 5, verbose: bool = True):
         # Initialize the parent Agent
         super().__init__(**agent.__dict__)  # Inherit all of the attributes of the passed agent
         # Initiatlize the functions
@@ -69,7 +70,7 @@ Use Equipped Functions other than use_llm to help answer the latest input from {
                 self.reset()
 
         ## Replies the person
-        res = self.query(f'''Summary of Past Conversation: ```{self.shared_variables['Summary of Conversation']}```
+        res = cast(dict[str, Any], self.query(f'''Summary of Past Conversation: ```{self.shared_variables['Summary of Conversation']}```
 Past Conversation: ```{self.shared_variables['Conversation'][-self.num_past_conversation:]}```
 Latest Input from {self.person}: ```{cur_msg}```
 Actions Done for Latest Input: ```{actions_done}```
@@ -82,7 +83,7 @@ Thereafter, update the Summary of Conversation''',
                           
 output_format = {"Thoughts": f"How to reply",
                  f"Reply to {self.person}": f"Your reply as {self.agent_name}",
-                 "Summary of Conversation": "Summarise key points of entire conversation in at most two sentences, building on previous Summary"})
+                 "Summary of Conversation": "Summarise key points of entire conversation in at most two sentences, building on previous Summary"}))
         
         # Update the Summary of Conversation and Append the conversation
         self.shared_variables['Summary of Conversation'] = res['Summary of Conversation']
@@ -126,7 +127,7 @@ class ConversableAgent:
     - **Summary of Conversation**: A summary of the current conversation
     
 - ConversableAgent uses `chat()` which chats with the Agent and the Agent will perform actions and reply the chat message'''
-    def __init__(self, agent: Agent, persistent_memory: dict = None, person = 'User', conversation = None, num_past_conversation: int = 5, verbose: bool = True):
+    def __init__(self, agent: Agent, persistent_memory: dict|None = None, person = 'User', conversation = None, num_past_conversation: int = 5, verbose: bool = True):
         self.agent = agent
         self.persistent_memory = persistent_memory
         self.num_past_conversation = num_past_conversation
