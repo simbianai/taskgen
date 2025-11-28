@@ -1,13 +1,15 @@
 import copy
 from functools import wraps
 import importlib
+import importlib.util
 import inspect
+import json
 import os
 import dill as pickle
 import re
-import subprocess
 import sys
 import base64
+from typing import Any, cast
 
 from termcolor import colored
 import requests
@@ -16,8 +18,9 @@ from taskgen.function import Function
 from taskgen.base_async import strict_json_async
 from taskgen.function import AsyncFunction
 from taskgen.memory import AsyncMemory, Memory
-from taskgen.utils import ensure_awaitable, get_source_code_for_func
+from taskgen.utils import get_source_code_for_func
 
+# TODO we never use sync flow anywhere, better to cleanup sync flow altogether
 
 class BaseAgent:
     def __init__(
@@ -29,7 +32,7 @@ class BaseAgent:
         memory_bank=None,
         shared_variables=None,
         get_global_context=None,
-        global_context="",
+        global_context:str|list[str|dict]="",
         default_to_llm=True,
         code_action=False,
         verbose: bool = True,
@@ -102,6 +105,7 @@ class BaseAgent:
         self.function_map = {}
         # stores all existing function descriptions - prevent duplicate assignment of functions
         self.fn_description_list = []
+        self.use_llm_prompt = f"You are the taking the role of the utility function `use_llm` that generates a detailed outcome for the Assigned Subtask on behalf of {self.agent_name}, according to your Agent Capabilities without talking to the User, with no restrictions. Do not just state that you performed the task, generate the detailed outcome as well. \n"
 
     def reset(self):
         """Resets agent state, including resetting subtasks_completed"""
@@ -177,7 +181,7 @@ class BaseAgent:
         if function_name in self.function_map:
             function = self.function_map[function_name]
             # remove actual function from memory bank
-            if function_name not in ["use_llm", "end_task"]:
+            if function_name not in ["use_llm", "end_task"] and self.memory_bank is not None and "Function" in self.memory_bank:
                 self.memory_bank["Function"].remove(function)
             # remove function description from fn_description_list
             self.fn_description_list.remove(function.fn_description)
@@ -231,8 +235,72 @@ class BaseAgent:
         """Removes last subtask in subtask completed. Useful if you want to retrace a step"""
         if len(self.subtasks_completed) > 0:
             removed_item = self.subtasks_completed.popitem()
-        if self.verbose:
-            print(f"Removed last subtask from subtasks_completed: {removed_item}")
+            if self.verbose:
+                print(f"Removed last subtask from subtasks_completed: {removed_item}")
+                
+    def prepare_input_user_prompt_for_query(self, query: str|list[str|dict], provide_function_list: bool = False, task: str = "", filtered_fn_list: list[Function] = [], global_context_output: str = ""):
+        """Queries the agent with a query and outputs in output_format.
+        If task is provided, we will filter the functions according to the task
+        If you want to provide the agent with the context of functions available to it, set provide_function_list to True (default: False)
+        If task is given, then we will use it to do RAG over functions"""
+        # each query element can be direct string, or list of string or list of dict, in case of dict it will have structure {"text": "text", "caching": "True/False"}
+        
+        if task != "":
+            for name, function in self.function_map.items():
+                if function.is_compulsory:
+                    filtered_fn_list.append(function)
+        # add in global context string and replace it with shared_variables as necessary
+        global_context_copy = copy.deepcopy(self.global_context)
+        if isinstance(global_context_copy, str):
+            global_context_copy = [global_context_copy]
+        updated_global_context: list[str|dict] = ["Global Context:\n"]
+        updated_global_context.append("\n<global_context>\n")
+        for context in global_context_copy:
+            if isinstance(context, dict):
+                context_text = context.get("text", json.dumps(context))
+            else:
+                context_text = context
+            matches = re.findall(r"<(.*?)>", context_text)
+            for match in matches:
+                if match in self.shared_variables:
+                    context_text = context_text.replace(
+                        f"<{match}>", str(self.shared_variables[match])
+                    )
+            if isinstance(context, dict) and "text" in context:
+                context["text"] = context_text
+            else:
+                context = context_text
+            updated_global_context.append(context)
+
+        # add in the global context function's output
+        if global_context_output:
+            updated_global_context.append(global_context_output)
+        updated_global_context.append("\n</global_context>\n")
+
+        user_prompt_list = []
+        user_prompt_list.append(f"""You are an agent named {self.agent_name} with the following description: ```{self.agent_description}```\n""")
+        user_prompt_list.extend(updated_global_context)
+        if provide_function_list:
+            user_prompt_list.append(f"You have the following Equipped Functions available:\n```{self.list_functions(filtered_fn_list)}```\n")
+        query = [query] if isinstance(query, str) else query
+        user_prompt_list.extend(query)
+        return user_prompt_list
+        
+    def get_subtasks_completed_as_query_list(self):
+        queries = []
+        queries.append(f"Subtasks Completed:\n")
+        queries.append(f"<subtasks_completed>\n")
+        subtasks_items = list(self.subtasks_completed.items())
+        for idx, (subtask, result) in enumerate(subtasks_items):
+            # if last result then add caching to the query
+            is_last = idx == len(subtasks_items) - 1
+            if is_last:
+                queries.append({"text": f"{subtask}: {result} \n", "caching": True})
+            else:
+                queries.append(f"{subtask}: {result} \n")
+        queries.append("</subtasks_completed> \n")
+        return queries
+
 
     # Alternate names
     list_function = list_functions
@@ -258,7 +326,7 @@ class BaseAgent:
             "task_completed": self.task_completed,
             "memory": {
                 name: {"memory": bank.memory, "top_k": getattr(bank, "top_k", None)}
-                for name, bank in self.memory_bank.items()
+                for name, bank in (self.memory_bank or {}).items()
                 if name != "Function"  # Skip Function memory as it contains unpicklable objects
             },
             "function_descriptions": self.fn_description_list,
@@ -290,7 +358,7 @@ class BaseAgent:
 
         # Restore memory bank data (except Function memory which is handled by get_base_agent)
         for name, memory_data in state["memory"].items():
-            if name in agent.memory_bank and name != "Function":
+            if agent.memory_bank is not None and name in agent.memory_bank and name != "Function":
                 agent.memory_bank[name].memory = memory_data["memory"]
                 if memory_data["top_k"] is not None:
                     agent.memory_bank[name].top_k = memory_data["top_k"]
@@ -340,7 +408,7 @@ class Agent(BaseAgent):
 
     def query(
         self,
-        query: str,
+        query: str|list[str|dict],
         output_format: dict,
         provide_function_list: bool = False,
         task: str = "",
@@ -351,50 +419,20 @@ class Agent(BaseAgent):
         If task is given, then we will use it to do RAG over functions"""
 
         # if we have a task to focus on, we can filter the functions (other than use_llm and end_task) by that task
-        filtered_fn_list = None
+        filtered_fn_list = []
         if task != "":
             # filter the functions
             filtered_fn_list = self.memory_bank["Function"].retrieve(task)
-
-            # add back compulsory functions (default: use_llm, end_task) if present in function_map
-            for name, function in self.function_map.items():
-                if function.is_compulsory:
-                    filtered_fn_list.append(function)
-
-        # add in global context string and replace it with shared_variables as necessary
-        global_context_string = self.global_context
-        matches = re.findall(r"<(.*?)>", global_context_string)
-        for match in matches:
-            if match in self.shared_variables:
-                global_context_string = global_context_string.replace(
-                    f"<{match}>", str(self.shared_variables[match])
-                )
-
+        
         # add in the global context function's output
         global_context_output = (
             self.get_global_context(self) if self.get_global_context is not None else ""
         )
-
-        global_context = ""
-        # Add in global context if present
-        if global_context_string != "" or global_context_output != "":
-            global_context = (
-                "Global Context:\n```\n"
-                + global_context_string
-                + "\n"
-                + global_context_output
-                + "```\n"
-            )
-
-        user_prompt = f"""You are an agent named {self.agent_name} with the following description: ```{self.agent_description}```\n"""
-        if provide_function_list:
-            user_prompt += f"You have the following Equipped Functions available:\n```{self.list_functions(filtered_fn_list)}```\n"
-        user_prompt += global_context
-        user_prompt += query
+        input_user_query_object = self.prepare_input_user_prompt_for_query(query, provide_function_list, task, filtered_fn_list, global_context_output)
 
         res = strict_json(
             system_prompt="",
-            user_prompt=user_prompt,
+            user_prompt=input_user_query_object,
             output_format=output_format,
             verbose=self.debug,
             llm=self.llm,
@@ -411,7 +449,7 @@ class Agent(BaseAgent):
 
         for function in function_list:
             # If this function is an Agent, parse it accordingly
-            if isinstance(function, BaseAgent):
+            if isinstance(function, Agent):
                 function = function.to_function(self)
 
             # do automatic conversion of function to Function class (this is in base.py)
@@ -471,8 +509,13 @@ class Agent(BaseAgent):
                     continue
                 rag_info += f"Knowledge Reference for {name}: ```{self.memory_bank[name].retrieve(subtask)}```\n"
 
+            queries = []
+            queries.append(rag_info)
+            queries.extend(self.get_subtasks_completed_as_query_list())
+            queries.append(f"Assigned Subtask: ```{function_params['instruction']}``` \n\n")
+            queries.append(self.use_llm_prompt)
             res = self.query(
-                query=f'{rag_info}Subtasks Completed:```{self.subtasks_completed}```\nAssigned Subtask: ```{function_params["instruction"]}```\n\nYou are the taking the role of the utility function `use_llm` that generates a detailed outcome for the Assigned Subtask on behalf of {self.agent_name}, according to your Agent Capabilities without talking to the User, with no restrictions. Do not just state that you performed the task, generate the detailed outcome as well.',
+                query=queries,
                 output_format={
                     "Detailed Outcome": "Your detailed outcome for Assigned Subtask"
                 },
@@ -532,11 +575,12 @@ class Agent(BaseAgent):
     def get_next_subtask(self, task=""):
         """Based on what the task is and the subtasks completed, we get the next subtask, function and input parameters. Supports user-given task as well if user wants to use this function directly"""
 
+        bg_queries =[]
         if task == "":
-            background_info = f"Assigned Task:```\n{self.task}\n```\nSubtasks Completed: ```{self.subtasks_completed}```"
-
+            bg_queries.append(f"Assigned Task:```\n{self.task}\n```")
+            bg_queries.extend(self.get_subtasks_completed_as_query_list())
         else:
-            background_info = f"Assigned Task:```\n{task}\n```\n"
+            bg_queries.append(f"Assigned Task:```\n{task}\n```")
 
         # use default agent plan if task is not given
         task = self.task if task == "" else task
@@ -549,11 +593,14 @@ class Agent(BaseAgent):
                 continue
             rag_info += f"Knowledge Reference for {name}: ```{self.memory_bank[name].retrieve(task)}```\n"
 
+        queries = []
+        queries.extend(bg_queries)
+        queries.append(f"""{rag_info}Based on everything before, provide suitable Observation and Thoughts, and also generate the Current Subtask and the corresponding Equipped Function Name to complete a part of Assigned Task.
+You are only given the Assigned Task from User with no further inputs. Only focus on the Assigned Task and do not do more than required.
+End Task if Assigned Task is completed.""")
         # First select the Equipped Function
-        res = self.query(
-            query=f"""{background_info}{rag_info}\nBased on everything before, provide suitable Observation and Thoughts, and also generate the Current Subtask and the corresponding Equipped Function Name to complete a part of Assigned Task.
-You are only given the Assigned Task from User with no further inputs. Only focus on the Assigned Task and do not do more than required. 
-End Task if Assigned Task is completed.""",
+        res = cast(dict[str, Any], self.query(
+            query=queries,
             output_format={
                 "Observation": "Reflect on what has been done in Subtasks Completed for Assigned Task",
                 "Thoughts": "Brainstorm how to complete remainder of Assigned Task only given Observation",
@@ -562,7 +609,7 @@ End Task if Assigned Task is completed.""",
             },
             provide_function_list=True,
             task=task,
-        )
+        ))
 
         if self.verbose:
             print(
@@ -615,22 +662,26 @@ End Task if Assigned Task is completed.""",
                 res["Equipped Function Inputs"] = {}
 
             else:
+                queries = []
+                queries.extend(bg_queries)
+                queries.append(f"{rag_info}\n\nCurrent Subtask: ```{res['Current Subtask']}```\nEquipped Function Details: ```{str(cur_function)}```\nOutput suitable values for Inputs to Equipped Function to fulfil Current Subtask\nInput fields are: {list(input_format.keys())}")
                 res2 = self.query(
-                    query=f"""{background_info}{rag_info}\n\nCurrent Subtask: ```{res["Current Subtask"]}```\nEquipped Function Details: ```{str(cur_function)}```\nOutput suitable values for Inputs to Equipped Function to fulfil Current Subtask\nInput fields are: {list(input_format.keys())}""",
+                    query=queries,
                     output_format=input_format,
                     provide_function_list=False,
                 )
 
                 # store the rest of the function parameters
-                res["Equipped Function Inputs"] = res2
+                res["Equipped Function Inputs"] = cast(dict[str, Any], res2)
 
         # Add in output to the thoughts
         self.thoughts.append(res)
 
+        function_inputs = cast(dict[str, Any], res["Equipped Function Inputs"])
         return (
             res["Current Subtask"],
             res["Equipped Function Name"],
-            res["Equipped Function Inputs"],
+            function_inputs,
         )
 
     def summarise_subtasks_completed(self, task: str = ""):
@@ -647,11 +698,14 @@ End Task if Assigned Task is completed.""",
 
         my_query = self.task if query == "" else query
 
-        res = self.query(
-            query=f"Subtasks Completed: ```{self.subtasks_completed}```\nAssigned Task: ```{my_query}```\nRespond to the Assigned Task using information from Global Context and Subtasks Completed only. Be factual and do not generate any new information. Be detailed and give all information available relevant for the Assigned Task in your Assigned Task Response",
+        queries = []
+        queries.extend(self.get_subtasks_completed_as_query_list())
+        queries.append(f"Assigned Task: ```{my_query}```\nRespond to the Assigned Task using information from Global Context and Subtasks Completed only. Be factual and do not generate any new information. Be detailed and give all information available relevant for the Assigned Task in your Assigned Task Response")
+        res = cast(dict[str, Any], self.query(
+            query=queries,
             output_format={"Assigned Task Response": "Detailed Response"},
             provide_function_list=False,
-        )
+        ))
 
         res = res["Assigned Task Response"]
 
@@ -1105,6 +1159,8 @@ class {agent_class_name}(Agent):
 
         # Load the module from the given file location
         spec = importlib.util.spec_from_file_location(agent_class_name, module_path)
+        if spec is None or spec.loader is None:
+            raise Exception(f"Failed to create module spec for {module_path}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
@@ -1175,7 +1231,7 @@ class AsyncAgent(BaseAgent):
 
     async def query(
         self,
-        query: str,
+        query: str|list[str|dict],
         output_format: dict,
         provide_function_list: bool = False,
         task: str = "",
@@ -1186,50 +1242,19 @@ class AsyncAgent(BaseAgent):
         If task is given, then we will use it to do RAG over functions"""
 
         # if we have a task to focus on, we can filter the functions (other than use_llm and end_task) by that task
-        filtered_fn_list = None
+        filtered_fn_list = []
         if task != "":
             # filter the functions
             filtered_fn_list = await self.memory_bank["Function"].retrieve(task)
 
-            # add back compulsory functions (default: use_llm, end_task) if present in function_map
-            for name, function in self.function_map.items():
-                if function.is_compulsory:
-                    filtered_fn_list.append(function)
-
-        # add in global context string and replace it with shared_variables as necessary
-        global_context_string = self.global_context
-        matches = re.findall(r"<(.*?)>", global_context_string)
-        for match in matches:
-            if match in self.shared_variables:
-                global_context_string = global_context_string.replace(
-                    f"<{match}>", str(self.shared_variables[match])
-                )
 
         # add in the global context function's output
-        global_context_output = (
-            self.get_global_context(self) if self.get_global_context is not None else ""
-        )
-
-        global_context = ""
-        # Add in global context if present
-        if global_context_string != "" or global_context_output != "":
-            global_context = (
-                "Global Context:\n```\n"
-                + global_context_string
-                + "\n"
-                + global_context_output
-                + "```\n"
-            )
-
-        user_prompt = f"""You are an agent named {self.agent_name} with the following description: ```{self.agent_description}```\n"""
-        if provide_function_list:
-            user_prompt += f"You have the following Equipped Functions available:\n```{self.list_functions(filtered_fn_list)}```\n"
-        user_prompt += global_context
-        user_prompt += query
+        global_context_output = await self.get_global_context(self) if self.get_global_context is not None else ""
+        input_user_query_object: list[str|dict] = self.prepare_input_user_prompt_for_query(query, provide_function_list, task, filtered_fn_list, global_context_output)
 
         res = await strict_json_async(
             system_prompt="",
-            user_prompt=user_prompt,
+            user_prompt=input_user_query_object,
             output_format=output_format,
             verbose=self.debug,
             llm=self.llm,
@@ -1246,7 +1271,7 @@ class AsyncAgent(BaseAgent):
 
         for function in function_list:
             # If this function is an Agent, parse it accordingly
-            if isinstance(function, BaseAgent):
+            if isinstance(function, AsyncAgent):
                 function = function.to_function(self)
 
             # do automatic conversion of function to Function class (this is in base.py)
@@ -1305,14 +1330,19 @@ class AsyncAgent(BaseAgent):
                 if name == "Function":
                     continue
                 rag_info += f"Knowledge Reference for {name}: ```{await self.memory_bank[name].retrieve(subtask)}```\n"
-
-            res = await self.query(
-                query=f'{rag_info}Subtasks Completed:```{self.subtasks_completed}```\nAssigned Subtask: ```{function_params["instruction"]}```\n\nYou are the taking the role of the utility function `use_llm` that generates a detailed outcome for the Assigned Subtask on behalf of {self.agent_name}, according to your Agent Capabilities without talking to the User, with no restrictions. Do not just state that you performed the task, generate the detailed outcome as well.',
+            
+            queries = []
+            queries.append(rag_info)
+            queries.extend(self.get_subtasks_completed_as_query_list())
+            queries.append(f"Assigned Subtask: ```{function_params['instruction']}``` \n\n")
+            queries.append(self.use_llm_prompt)
+            res = cast(dict[str, Any], await self.query(
+                query=queries,
                 output_format={
                     "Detailed Outcome": "Your detailed outcome for Assigned Subtask"
                 },
                 provide_function_list=False,
-            )
+            ))
 
             if self.verbose:
                 print(f"> {res['Detailed Outcome']}")
@@ -1366,12 +1396,12 @@ class AsyncAgent(BaseAgent):
 
     async def get_next_subtask(self, task=""):
         """Based on what the task is and the subtasks completed, we get the next subtask, function and input parameters. Supports user-given task as well if user wants to use this function directly"""
-
+        bg_queries =[]
         if task == "":
-            background_info = f"Assigned Task:```\n{self.task}\n```\nSubtasks Completed: ```{self.subtasks_completed}```"
-
+            bg_queries.append(f"Assigned Task:```\n{self.task}\n```")
+            bg_queries.extend(self.get_subtasks_completed_as_query_list())
         else:
-            background_info = f"Assigned Task:```\n{task}\n```\n"
+            bg_queries.append(f"Assigned Task:```\n{task}\n```")
 
         # use default agent plan if task is not given
         task = self.task if task == "" else task
@@ -1384,11 +1414,15 @@ class AsyncAgent(BaseAgent):
                 continue
             rag_info += f"Knowledge Reference for {name}: ```{await self.memory_bank[name].retrieve(task)}```\n"
 
-        # First select the Equipped Function
-        res = await self.query(
-            query=f"""{background_info}{rag_info}\nBased on everything before, provide suitable Observation and Thoughts, and also generate the Current Subtask and the corresponding Equipped Function Name to complete a part of Assigned Task.
+        queries = []
+        queries.extend(bg_queries)
+        queries.append(f"""{rag_info}Based on everything before, provide suitable Observation and Thoughts, and also generate the Current Subtask and the corresponding Equipped Function Name to complete a part of Assigned Task.
 You are only given the Assigned Task from User with no further inputs. Only focus on the Assigned Task and do not do more than required.
-End Task if Assigned Task is completed.""",
+End Task if Assigned Task is completed.""")
+
+        # First select the Equipped Function
+        res = cast(dict[str, Any], await self.query(
+            query=queries,
             output_format={
                 "Observation": "Reflect on what has been done in Subtasks Completed for Assigned Task",
                 "Thoughts": "Brainstorm how to complete remainder of Assigned Task only given Observation",
@@ -1397,7 +1431,7 @@ End Task if Assigned Task is completed.""",
             },
             provide_function_list=True,
             task=task,
-        )
+        ))
 
         if self.verbose:
             print(
@@ -1450,22 +1484,26 @@ End Task if Assigned Task is completed.""",
                 res["Equipped Function Inputs"] = {}
 
             else:
+                queries = []
+                queries.extend(bg_queries)
+                queries.append(f"{rag_info}\n\nCurrent Subtask: ```{res['Current Subtask']}```\nEquipped Function Details: ```{str(cur_function)}```\nOutput suitable values for Inputs to Equipped Function to fulfil Current Subtask\nInput fields are: {list(input_format.keys())}")
                 res2 = await self.query(
-                    query=f"""{background_info}{rag_info}\n\nCurrent Subtask: ```{res["Current Subtask"]}```\nEquipped Function Details: ```{str(cur_function)}```\Output suitable values for Inputs to Equipped Function to fulfil Current Subtask\nInput fields are: {list(input_format.keys())}""",
+                    query=queries,
                     output_format=input_format,
                     provide_function_list=False,
                 )
 
                 # store the rest of the function parameters
-                res["Equipped Function Inputs"] = res2
+                res["Equipped Function Inputs"] = cast(dict[str, Any], res2)
 
         # Add in output to the thoughts
         self.thoughts.append(res)
 
+        function_inputs = cast(dict[str, Any], res["Equipped Function Inputs"])
         return (
             res["Current Subtask"],
             res["Equipped Function Name"],
-            res["Equipped Function Inputs"],
+            function_inputs,
         )
 
     async def summarise_subtasks_completed(self, task: str = ""):
@@ -1484,11 +1522,14 @@ End Task if Assigned Task is completed.""",
 
         my_query = self.task if query == "" else query
 
-        res = await self.query(
-            query=f"Subtasks Completed: ```{self.subtasks_completed}```\nAssigned Task: ```{my_query}```\nRespond to the Assigned Task in detail using information from Global Context and Subtasks Completed only. Be factual and do not generate any new information. Be detailed and give all information available relevant for the Assigned Task in your Assigned Task Response",
+        queries = []
+        queries.extend(self.get_subtasks_completed_as_query_list())
+        queries.append(f"Assigned Task: ```{my_query}```\nRespond to the Assigned Task in detail using information from Global Context and Subtasks Completed only. Be factual and do not generate any new information. Be detailed and give all information available relevant for the Assigned Task in your Assigned Task Response")
+        res = cast(dict[str, Any], await self.query(
+            query=queries,
             output_format={"Assigned Task Response": "Detailed Response"},
             provide_function_list=False,
-        )
+        ))
 
         res = res["Assigned Task Response"]
 
@@ -1538,7 +1579,7 @@ End Task if Assigned Task is completed.""",
             # otherwise do the task
             for i in range(num_subtasks):
                 # Determine next subtask, or if task is complete. Always execute if it is the first subtask
-                subtask, function_name, function_params = await self.get_next_subtask()
+                subtask, function_name, function_params =  await self.get_next_subtask()
                 if function_name == "end_task":
                     self.task_completed = True
                     if self.verbose:
@@ -1697,7 +1738,8 @@ class Async_Agent_External_Function(Base_Agent_External_Function):
             )
         agent_copy.subtasks_completed = {}
 
-        output = await agent_copy.run(instruction, self.meta_agent.overall_task)
+        # Type assertion: agent_copy is an AsyncAgent, so run is async
+        output = await cast(AsyncAgent, agent_copy).run(instruction, self.meta_agent.overall_task)
 
         # append result of inner agent to meta agent
         agent_copy.verbose = False

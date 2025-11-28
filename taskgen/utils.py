@@ -8,7 +8,10 @@ def get_source_code_for_func(fn):
     if fn.__name__ == "<lambda>":
         source_line = inspect.getsource(fn)
         source_line = source_line.split('#')[0]
-        match = re.search(r"\blambda\b[^:]+:.*", source_line).group(0)
+        match = re.search(r"\blambda\b[^:]+:.*", source_line)
+        if match is None:
+            raise ValueError(f"Could not extract lambda function from source: {source_line}")
+        match = match.group(0)
         splits = [s for s in match.split(",") if s != ""]
         fn_code = splits[0]
         idx = 1

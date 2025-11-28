@@ -3,6 +3,7 @@ import re
 import ast
 from typing import Tuple
 
+# TODO we never use sync flow anywhere, better to cleanup sync flow altogether
 
 ### Helper Functions ###
 
@@ -14,11 +15,11 @@ def convert_to_list(field: str, **kwargs) -> list:
     res = chat(system_msg, user_msg, **kwargs)
 
     # Extract out list items
-    field = re.findall(r'\(%item\)\s*(.*?)\n*(?=\(%item\)|$)', res, flags=re.DOTALL)
-    return field
+    items = re.findall(r'\(%item\)\s*(.*?)\n*(?=\(%item\)|$)', res, flags=re.DOTALL)
+    return items
 
 
-def convert_to_dict(field: str, keys: dict, delimiter: str) -> dict:
+def convert_to_dict(field: str, keys:list, delimiter: str) -> dict:
     '''Converts the string field into a dictionary with keys by splitting on '{delimiter}{key}{delimiter}' '''
     output_d = {}
     for key in keys:
@@ -201,7 +202,7 @@ def type_check_and_convert(field, key, data_type, **kwargs):
 
 
 
-def check_datatype(field, key: dict, data_type: str, **kwargs):
+def check_datatype(field, key, data_type: str, **kwargs):
     ''' Ensures that output field of the key of JSON dictionary is of data_type 
     Currently supports int, float, str, code, enum, lists, nested lists, dict, dict with keys
     Takes in **kwargs for the LLM model
@@ -265,7 +266,7 @@ def check_datatype(field, key: dict, data_type: str, **kwargs):
 
 
 
-def check_key(field: str, output_format, new_output_format, delimiter: str, delimiter_num: int, **kwargs):
+def check_key(field, output_format, new_output_format, delimiter: str, delimiter_num: int, **kwargs):
     ''' Check whether each key in dict, or elements in list of new_output_format is present in field, and whether they meet the right data type requirements, then convert field to the right data type
     If needed, calls LLM model with parameters **kwargs to correct the output format for improperly formatted list
     output_format is user-given output format at each level, new_output_format is with delimiters in keys, and angle brackets surrounding values
@@ -278,7 +279,7 @@ def check_key(field: str, output_format, new_output_format, delimiter: str, deli
         # this is the processed output dictionary for that particular layer in the output structure
         output_d = {}
         # check key appears for each element in the output
-        output_d = convert_to_dict(field, output_format.keys(), cur_delimiter)
+        output_d = convert_to_dict(field, list(output_format.keys()), cur_delimiter)
             
         # after creating dictionary, step into next layer
         for key, value in output_d.items():
@@ -368,22 +369,23 @@ def wrap_with_angle_brackets(d: dict, delimiter: str, delimiter_num: int) -> dic
     else:
         return d
     
-def chat(system_prompt: str, user_prompt: str, model: str = 'gpt-4o-mini', temperature: float = 0, verbose: bool = False, host: str = 'openai', llm = None, **kwargs):
+def chat(system_prompt: str, user_prompt: str|list[str], model: str = 'gpt-4o-mini', temperature: float = 0, verbose: bool = False, host: str = 'openai', llm = None, **kwargs):
     r"""Performs a chat with the host's LLM model with system prompt, user prompt, model, verbose and kwargs
     Returns the output string res
     - system_prompt: String. Write in whatever you want the LLM to become. e.g. "You are a \<purpose in life\>"
-    - user_prompt: String. The user input. Later, when we use it as a function, this is the function input
+    - user_prompt: String or list of strings. The user input. Later, when we use it as a function, this is the function input
     - model: String. The LLM model to use for json generation
     - verbose: Boolean (default: False). Whether or not to print out the system prompt, user prompt, GPT response
     - host: String. The provider of the LLM
     - llm: User-made llm function.
         - Inputs:
             - system_prompt: String. Write in whatever you want the LLM to become. e.g. "You are a \<purpose in life\>"
-            - user_prompt: String. The user input. Later, when we use it as a function, this is the function input
+            - user_prompt: String or list of strings. The user input. Later, when we use it as a function, this is the function input
         - Output:
             - res: String. The response of the LLM call
     - **kwargs: Dict. Additional arguments for LLM chat
     """
+    res =""
     if llm is not None:
         ''' If you specified your own LLM, then we just feed in the system and user prompt 
         LLM function should take in system prompt (str) and user prompt (str), and output a response (str) '''
@@ -401,6 +403,8 @@ def chat(system_prompt: str, user_prompt: str, model: str = 'gpt-4o-mini', tempe
 
         from openai import OpenAI
         client = OpenAI()
+        if isinstance(user_prompt, list):
+            user_prompt = "\n".join(user_prompt)
         response = client.chat.completions.create(
             model=model,
             temperature = temperature,
@@ -421,14 +425,14 @@ def chat(system_prompt: str, user_prompt: str, model: str = 'gpt-4o-mini', tempe
 
 
 ### Main Functions ###
-def strict_json(system_prompt: str, user_prompt: str, output_format: dict, return_as_json = False, custom_checks: dict = None, check_data = None, delimiter: str = '###', num_tries: int = 3, openai_json_mode: bool = False, **kwargs):
+def strict_json(system_prompt: str, user_prompt: str|list[str], output_format: dict, return_as_json = False, custom_checks: dict|None = None, check_data = None, delimiter: str = '###', num_tries: int = 3, openai_json_mode: bool = False, **kwargs):
     r""" Ensures that OpenAI will always adhere to the desired output JSON format defined in output_format.
     Uses rule-based iterative feedback to ask GPT to self-correct.
     Keeps trying up to num_tries it it does not. Returns empty JSON if unable to after num_tries iterations.
     
     Inputs (compulsory):
     - system_prompt: String. Write in whatever you want GPT to become. e.g. "You are a \<purpose in life\>"
-    - user_prompt: String. The user input. Later, when we use it as a function, this is the function input
+    - user_prompt: String or list of strings. The user input. Later, when we use it as a function, this is the function input
     - output_format: Dict. JSON format with the key as the output key, and the value as the output description
     
     Inputs (optional):
@@ -459,8 +463,11 @@ def strict_json(system_prompt: str, user_prompt: str, output_format: dict, retur
         
         output_format_prompt = "\nOutput in the following json string format: " + str(output_format) + "\nBe concise."
             
-        my_system_prompt = str(system_prompt) + output_format_prompt
-        my_user_prompt = str(user_prompt) 
+        my_system_prompt = str(system_prompt)
+        if isinstance(user_prompt, list):
+            my_user_prompt = user_prompt + [output_format_prompt]
+        else:
+            my_user_prompt = [user_prompt] + [output_format_prompt]
             
         res = chat(my_system_prompt, my_user_prompt, response_format = {"type": "json_object"}, **kwargs)
         
@@ -487,8 +494,11 @@ Your response must only be the updated json template beginning with {{ and endin
 Ensure the following output keys are present in the json: {' '.join(list(new_output_format.keys()))}'''
 
         for i in range(num_tries):
-            my_system_prompt = str(system_prompt) + output_format_prompt + error_msg
-            my_user_prompt = str(user_prompt) 
+            my_system_prompt = str(system_prompt) 
+            if isinstance(user_prompt, list):
+                my_user_prompt = user_prompt + [output_format_prompt] + [error_msg]
+            else:
+                my_user_prompt = [user_prompt] + [output_format_prompt] + [error_msg]
 
             # Use OpenAI to get a response
             res = chat(my_system_prompt, my_user_prompt, **kwargs)
@@ -514,7 +524,7 @@ Ensure the following output keys are present in the json: {' '.join(list(new_out
                 
                 # do checks for keys and output format, remove escape characters so code can be run
                 end_dict = check_key(res, output_format, new_output_format, delimiter, delimiter_num = 1, **kwargs)
-                
+                assert isinstance(end_dict, dict)
                 # run user defined custom checks now
                 for key in end_dict:
                     if key in custom_checks:
