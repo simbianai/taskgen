@@ -3,7 +3,7 @@ import json
 import re
 import ast
 from typing import Tuple
-from taskgen.base import convert_to_dict, parse_response_llm_check, remove_unicode_escape, type_check_and_convert, wrap_with_angle_brackets
+from taskgen.base import convert_to_dict, parse_response_llm_check, type_check_and_convert, wrap_with_angle_brackets
 
 from taskgen.utils import ensure_awaitable
 
@@ -149,15 +149,6 @@ async def check_key_async(field, output_format, new_output_format, delimiter: st
         coroutines = [check_key_async(str(field[num]), output_format[num], new_output_format[num], delimiter, delimiter_num+1) for num in range(len(output_format))]
         results = await asyncio.gather(*coroutines)
         return results
-    
-    # if string, then do literal eval to convert output field for further processing
-    elif isinstance(output_format, str):
-        # if literal eval fails, just leave it as string, no need to raise error
-        try:
-            field = ast.literal_eval(field)
-        except Exception as e:
-            pass
-        return remove_unicode_escape(field)
     
     # otherwise just return the value
     else:
