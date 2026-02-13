@@ -64,7 +64,10 @@ def convert_to_dict(field: str, keys:list, delimiter: str) -> dict:
     my_matches = [match for match in matches if match !='']
 
     # remove the ' from the value matches
-    curated_matches = [match[1:-1] if match[0] in '\'"' else match for match in my_matches]
+    curated_matches = [
+        json.loads(match) if match[0] == '"' else json.loads(f'"{match[1:-1]}"') if match[0] == "'" else match
+        for match in my_matches
+    ]
 
     # create a dictionary
     for i in range(0, len(curated_matches), 2):
@@ -310,15 +313,6 @@ def check_key(field, output_format, new_output_format, delimiter: str, delimiter
         
         return [check_key(str(field[num]), output_format[num], new_output_format[num], delimiter, delimiter_num+1) for num in range(len(output_format))]
     
-    # if string, then do literal eval to convert output field for further processing
-    elif isinstance(output_format, str):
-        # if literal eval fails, just leave it as string, no need to raise error
-        try:
-            field = ast.literal_eval(field)
-        except Exception as e:
-            pass
-        return remove_unicode_escape(field)
-    
     # otherwise just return the value
     else:
         return field
@@ -326,25 +320,6 @@ def check_key(field, output_format, new_output_format, delimiter: str, delimiter
     
     
 
-    
-def remove_unicode_escape(my_datatype):
-    ''' Removes the unicode escape character from the ending string in my_datatype (can be nested) '''
-    if isinstance(my_datatype, dict):
-        output_d = {}
-        # wrap keys with delimiters
-        for key, value in my_datatype.items():
-            output_d[key] = remove_unicode_escape(value)
-        return output_d
-    elif isinstance(my_datatype, list):
-        return [remove_unicode_escape(item) for item in my_datatype]
-    # if it is a string, remove the unicode escape characters from it, so code can be run
-    elif isinstance(my_datatype, str):
-        # only do decoding for code if backslash present
-        if '\\' in my_datatype:
-            my_datatype = my_datatype.replace('\\n','\n').replace('\\t','\t').replace('\\"','\"').replace("\\'","\'").replace("â\x80\x99", "'")
-        return my_datatype
-    else:
-        return my_datatype
     
 def wrap_with_angle_brackets(d: dict, delimiter: str, delimiter_num: int) -> dict:
     ''' Changes d to output_d by wrapping delimiters over the keys, and putting angle brackets on the values 
