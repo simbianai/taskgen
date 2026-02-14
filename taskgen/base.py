@@ -3,6 +3,8 @@ import re
 import ast
 from typing import Tuple
 
+from .utils import load_string
+
 # TODO we never use sync flow anywhere, better to cleanup sync flow altogether
 
 ### Helper Functions ###
@@ -64,10 +66,7 @@ def convert_to_dict(field: str, keys:list, delimiter: str) -> dict:
     my_matches = [match for match in matches if match !='']
 
     # remove the ' from the value matches
-    curated_matches = [
-        json.loads(match) if match[0] == '"' else json.loads(f'"{match[1:-1]}"') if match[0] == "'" else match
-        for match in my_matches
-    ]
+    curated_matches = [load_string(match) for match in my_matches]
 
     # create a dictionary
     for i in range(0, len(curated_matches), 2):
@@ -312,6 +311,15 @@ def check_key(field, output_format, new_output_format, delimiter: str, delimiter
             raise Exception(f'''Output "{field}" has fewer elements than required by "{output_format}". Add in more list elements.''')
         
         return [check_key(str(field[num]), output_format[num], new_output_format[num], delimiter, delimiter_num+1) for num in range(len(output_format))]
+    
+    # if string, then do literal eval to convert output field for further processing
+    elif isinstance(output_format, str):
+        # if literal eval fails, just leave it as string, no need to raise error
+        try:
+            field = ast.literal_eval(field)
+        except Exception as e:
+            pass
+        return field
     
     # otherwise just return the value
     else:

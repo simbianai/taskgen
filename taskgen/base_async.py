@@ -150,6 +150,15 @@ async def check_key_async(field, output_format, new_output_format, delimiter: st
         results = await asyncio.gather(*coroutines)
         return results
     
+    # if string, then do literal eval to convert output field for further processing
+    elif isinstance(output_format, str):
+        # if literal eval fails, just leave it as string, no need to raise error
+        try:
+            field = ast.literal_eval(field)
+        except Exception as e:
+            pass
+        return field
+    
     # otherwise just return the value
     else:
         return field
