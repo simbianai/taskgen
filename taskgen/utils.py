@@ -1,6 +1,7 @@
 import ast
 import heapq
 import inspect
+import json
 import re
 
 
@@ -49,6 +50,11 @@ def top_k_index(lst, k):
     return top_k_indices
 
 
-
-
+def load_string(value: str) -> str:
+    if value[0] == '"':
+        return json.loads(value)
+    try:
+        return ast.literal_eval(value)
+    except Exception:
+        return value
 
