@@ -9,7 +9,7 @@ import dill as pickle
 import re
 import sys
 import base64
-from typing import Any, cast
+from typing import Any, Awaitable, Callable, Optional, Union, cast
 
 from termcolor import colored
 import requests
@@ -1235,11 +1235,22 @@ class AsyncAgent(BaseAgent):
         output_format: dict,
         provide_function_list: bool = False,
         task: str = "",
+        custom_validator: Optional[Callable[[Any], Union[Optional[str], Awaitable[Optional[str]]]]] = None,
+        max_validation_retries: int = 2,
     ):
         """Queries the agent with a query and outputs in output_format.
         If task is provided, we will filter the functions according to the task
         If you want to provide the agent with the context of functions available to it, set provide_function_list to True (default: False)
-        If task is given, then we will use it to do RAG over functions"""
+        If task is given, then we will use it to do RAG over functions
+
+        Optional validation + retry:
+            custom_validator: callable invoked with the LLM result. Returns None
+                if the result is acceptable, or a feedback string describing
+                what was wrong; the feedback is appended to the next prompt so
+                the LLM can self-correct. May be sync or async.
+            max_validation_retries: max number of additional LLM calls after
+                the first when custom_validator rejects the result (default 2).
+        """
 
         # if we have a task to focus on, we can filter the functions (other than use_llm and end_task) by that task
         filtered_fn_list = []
@@ -1252,14 +1263,38 @@ class AsyncAgent(BaseAgent):
         global_context_output = await self.get_global_context(self) if self.get_global_context is not None else ""
         input_user_query_object: list[str|dict] = self.prepare_input_user_prompt_for_query(query, provide_function_list, task, filtered_fn_list, global_context_output)
 
-        res = await strict_json_async(
-            system_prompt="",
-            user_prompt=input_user_query_object,
-            output_format=output_format,
-            verbose=self.debug,
-            llm=self.llm,
-            **self.kwargs,
-        )
+        attempts = (max_validation_retries + 1) if custom_validator is not None else 1
+        res: Any = None
+        prompt_for_attempt: list[str|dict] = input_user_query_object
+        for attempt in range(attempts):
+            res = await strict_json_async(
+                system_prompt="",
+                user_prompt=prompt_for_attempt,
+                output_format=output_format,
+                verbose=self.debug,
+                llm=self.llm,
+                **self.kwargs,
+            )
+
+            if custom_validator is None:
+                break
+
+            feedback = custom_validator(res)
+            if inspect.isawaitable(feedback):
+                feedback = await feedback
+            if not feedback:
+                break
+
+            if attempt == attempts - 1:
+                # Final attempt also failed validation; return what we have.
+                # Callers are responsible for handling an invalid final result.
+                break
+
+            prompt_for_attempt = list(input_user_query_object) + [
+                "\n\nThe previous response was rejected by the validator. "
+                f"Reason: {feedback}\n"
+                "Produce a new response that fixes the issue. Do not repeat the same mistake.",
+            ]
 
         return res
 
