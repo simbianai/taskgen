@@ -1,8 +1,9 @@
 import asyncio
+import inspect
 import json
 import re
 import ast
-from typing import Tuple
+from typing import Any, Awaitable, Callable, Optional, Tuple, Union
 from taskgen.base import convert_to_dict, parse_response_llm_check, type_check_and_convert, wrap_with_angle_brackets
 
 from taskgen.utils import ensure_awaitable
@@ -229,7 +230,19 @@ async def chat_async(system_prompt: str, user_prompt: str|list[str|dict], model:
 ### Main Functions ###
     
     
-async def strict_json_async(system_prompt: str, user_prompt: str|list[str|dict], output_format: dict, return_as_json = False, custom_checks: dict|None = None, check_data = None, delimiter: str = '###', num_tries: int = 3, openai_json_mode: bool = False, **kwargs):
+async def strict_json_async(
+    system_prompt: str,
+    user_prompt: str|list[str|dict],
+    output_format: dict,
+    return_as_json = False,
+    custom_checks: dict|None = None,
+    check_data = None,
+    delimiter: str = '###',
+    num_tries: int = 3,
+    openai_json_mode: bool = False,
+    custom_validator: Optional[Callable[[Any], Union[Optional[str], Awaitable[Optional[str]]]]] = None,
+    **kwargs
+):
     r""" Ensures that OpenAI will always adhere to the desired output JSON format defined in output_format.
     Uses rule-based iterative feedback to ask GPT to self-correct.
     Keeps trying up to num_tries it it does not. Returns empty JSON if unable to after num_tries iterations.
@@ -246,6 +259,8 @@ async def strict_json_async(system_prompt: str, user_prompt: str|list[str|dict],
     - delimiter: String (Default: '###'). This is the delimiter to surround the keys. With delimiter ###, key becomes ###key###
     - num_tries: Integer (default: 3). The number of tries to iteratively prompt GPT to generate correct json format
     - openai_json_mode: Boolean (default: False). Whether or not to use OpenAI JSON Mode
+    - custom_validator: Optional callable invoked with the parsed output. Returns None if valid,
+      or a feedback string describing what to fix. May be sync or async.
     - **kwargs: Dict. Additional arguments for LLM chat
     
     Output:
@@ -348,6 +363,13 @@ Ensure the following output keys are present in the json: {' '.join(list(new_out
                                 raise Exception(f'Output field of "{key}" does not meet requirement "{requirement}". Action needed: "{action_needed}"')
                             else:
                                 print('Requirement met\n\n')
+                if custom_validator is not None:
+                    feedback = custom_validator(end_dict)
+                    if inspect.isawaitable(feedback):
+                        feedback = await feedback
+                    if feedback:
+                        print(f'Custom validator rejected output. Action needed: "{feedback}"\n\n')
+                        raise Exception(f'Output does not meet custom validator requirement. Action needed: "{feedback}"')
                 if return_as_json:
                     return json.dumps(end_dict, ensure_ascii=False)
                 else:
