@@ -9,7 +9,7 @@ import dill as pickle
 import re
 import sys
 import base64
-from typing import Any, cast
+from typing import Any, Awaitable, Callable, Optional, Union, cast
 
 from termcolor import colored
 import requests
@@ -1235,11 +1235,20 @@ class AsyncAgent(BaseAgent):
         output_format: dict,
         provide_function_list: bool = False,
         task: str = "",
+        custom_validator: Optional[Callable[[Any], Union[Optional[str], Awaitable[Optional[str]]]]] = None,
     ):
         """Queries the agent with a query and outputs in output_format.
         If task is provided, we will filter the functions according to the task
         If you want to provide the agent with the context of functions available to it, set provide_function_list to True (default: False)
-        If task is given, then we will use it to do RAG over functions"""
+        If task is given, then we will use it to do RAG over functions
+
+        Optional validation + retry:
+            custom_validator: callable invoked with the LLM result. Returns None
+                if the result is acceptable, or a feedback string describing
+                what was wrong; the feedback is appended to the next prompt so
+                the LLM can self-correct within strict_json_async's retry budget.
+                May be sync or async.
+        """
 
         # if we have a task to focus on, we can filter the functions (other than use_llm and end_task) by that task
         filtered_fn_list = []
@@ -1258,6 +1267,7 @@ class AsyncAgent(BaseAgent):
             output_format=output_format,
             verbose=self.debug,
             llm=self.llm,
+            custom_validator=custom_validator,
             **self.kwargs,
         )
 
